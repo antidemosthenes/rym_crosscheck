@@ -1,0 +1,10 @@
+[[songs]]
+url = "https://rateyourmusic.com/song/radiohead/paranoid-android/"
+
+[[songs]]
+title = "Example song"
+artist = "Example artist"
+
+[[songs]]
+title = "Example collaboration"
+artists = ["Principal artist", "Guest artist"]

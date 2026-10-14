@@ -1,0 +1,7 @@
+/build/
+/.rym-crosscheck-cache/
+/missing.md
+/whitelist.toml
+*.tmp
+*.log
+/.vscode/
