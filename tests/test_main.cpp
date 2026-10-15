@@ -6,6 +6,7 @@
 #include "rym_crosscheck/rym/parser.hpp"
 #include "rym_crosscheck/storage/whitelist.hpp"
 #include <algorithm>
+#include <condition_variable>
 #include <functional>
 #include <iostream>
 #include <random>
@@ -193,6 +194,10 @@ void parsing() {
     throws([&] { rym::validate_chart(page.songs, 3); });
     throws(
         [] { rym::parse_chart("<title>Just a moment...</title>", "https://rateyourmusic.com/"); });
+    require(rym::challenged("<title>Security check required</title>"),
+            "RYM security gate detected");
+    require(!rym::challenged("<title>Security check required by Example Artist</title>"),
+            "Song title is not a security gate");
     throws([] { rym::song_url("https://evil.example/song/test/"); });
     throws([] { rym::song_url("https://rateyourmusic.com/artist/test/"); });
 }
@@ -221,6 +226,76 @@ void acquisition() {
         }
     } broken;
     throws([&] { rym::fetch_chart(broken, 1); });
+}
+void album_workers() {
+    for (auto [requested, jobs] : std::vector<std::pair<std::size_t, std::size_t>>{
+             {1, 11}, {4, 11}, {8, 11}, {8, 3}, {16, 11}}) {
+        struct State {
+            std::mutex mutex;
+            std::condition_variable ready;
+            std::vector<std::string> urls;
+            std::vector<std::size_t> visits;
+            std::size_t width{}, entered{}, active{}, peak{}, factories{};
+        } state;
+        state.width = std::min({requested, jobs, std::size_t{8}});
+        state.visits.resize(jobs);
+        rym::Snapshot snapshot;
+        std::vector<rym::Missing> missing;
+        for (std::size_t i = 0; i < jobs; ++i) {
+            auto item = song("Example", {"Band"});
+            item.rank = i + 1;
+            item.url = "https://rateyourmusic.com/song/band/song-" + std::to_string(i) + "/";
+            state.urls.push_back(item.url);
+            missing.push_back({item, {}});
+            snapshot.songs.push_back(std::move(item));
+        }
+        class Mock final : public rym::Transport {
+            State &state_;
+
+          public:
+            explicit Mock(State &state) : state_(state) {}
+            std::string fetch(std::string_view url) override {
+                std::unique_lock lock(state_.mutex);
+                auto found = std::ranges::find(state_.urls, url);
+                if (found == state_.urls.end())
+                    throw rym::Error("Unexpected album URL");
+                ++state_.visits[static_cast<std::size_t>(found - state_.urls.begin())];
+                ++state_.active;
+                state_.peak = std::max(state_.peak, state_.active);
+                ++state_.entered;
+                state_.ready.notify_all();
+                auto complete = state_.ready.wait_for(
+                    lock, std::chrono::seconds(2), [&] { return state_.entered >= state_.width; });
+                --state_.active;
+                if (!complete)
+                    throw rym::Error("Worker rendezvous timed out");
+                return "<div class='page_song_header_info_rest'>Track A1 on "
+                       "<a class='album' href='/release/album/band/album/'>Album</a></div>";
+            }
+        };
+        rym::enrich_albums(
+            missing, snapshot,
+            [&]() -> std::unique_ptr<rym::Transport> {
+                {
+                    std::lock_guard lock(state.mutex);
+                    ++state.factories;
+                }
+                return std::make_unique<Mock>(state);
+            },
+            requested);
+        require(state.factories == state.width && state.peak == state.width && state.active == 0,
+                "Album workers respect requested, job-count, and application limits");
+        require(std::ranges::all_of(state.visits, [](auto count) { return count == 1; }),
+                "Each album job is fetched exactly once");
+        require(std::ranges::all_of(snapshot.songs,
+                                    [](const auto &item) { return item.album == "Album"; }),
+                "Concurrent album results remain attached to their songs");
+    }
+    rym::Pacer pacer(std::chrono::seconds(10));
+    pacer.wait();
+    std::stop_source restricted;
+    restricted.request_stop();
+    throws([&] { pacer.wait(restricted.get_token()); });
 }
 void tag_priority() {
     Temp temporary;
@@ -337,6 +412,11 @@ void cli_offline() {
     require(rym::application(args) == 0, "CLI offline result");
     require(rym::read_file(output).find("All compared songs") != std::string::npos,
             "Owned songs excluded");
+    for (const auto &workers : {"1", "8"}) {
+        auto with_workers = args;
+        with_workers.insert(with_workers.end(), {"--web-workers", workers});
+        require(rym::application(with_workers) == 0, "Web-worker CLI boundaries accepted");
+    }
     auto previous = rym::read_file(output);
     args[5] = "2";
     require(rym::application(args) == 1, "Incomplete chart fails");
@@ -395,33 +475,38 @@ void resource_moves() {
     assigned_index = std::move(moved_index);
     require(assigned_index.owns(song("Alpha", {"Band"})), "Moved index retains lookup data");
 }
-void profile_cleanup() {
+void cli_validation() {
     Temp temporary;
-    auto parent = temporary.path / "edge-profile";
-    std::filesystem::path session;
-    {
-        rym::BrowserProfile persistent(parent, false);
-        rym::atomic_write(persistent.path() / "cookie-marker", "preserve");
-        {
-            rym::BrowserProfile disposable(parent, true);
-            session = disposable.path();
-            require(session.parent_path() == std::filesystem::absolute(parent),
-                    "Private profile is an owned child directory");
-            require(!std::filesystem::exists(session / "cookie-marker"),
-                    "Private profile does not reuse persistent cookies");
-            rym::atomic_write(session / "cookie-marker", "discard");
-        }
-        require(!std::filesystem::exists(session), "Private profile removed after normal exit");
-        try {
-            rym::BrowserProfile disposable(parent, true);
-            session = disposable.path();
-            throw rym::Error("Controlled failure");
-        } catch (const rym::Error &) {
-        }
-        require(!std::filesystem::exists(session), "Private profile removed after failure");
+    auto report = temporary.path / "report.md";
+    auto cache = temporary.path / "cache";
+    auto whitelist = temporary.path / "whitelist.toml";
+    rym::atomic_write(report, "previous report");
+    rym::atomic_write(whitelist, "");
+    for (const auto &option : std::vector<std::vector<std::string>>{{"--web-mode", "browser"},
+                                                                    {"--web-mode", "http"},
+                                                                    {"--private-browser"},
+                                                                    {"--persistent-browser"},
+                                                                    {"--web-workers", "0"},
+                                                                    {"--web-workers", "9"}}) {
+        std::vector<std::string> args{"rym-crosscheck",
+                                      "--music-dir",
+                                      rym::path_text(temporary.path),
+                                      "--output",
+                                      rym::path_text(report),
+                                      "--cache-dir",
+                                      rym::path_text(cache),
+                                      "--whitelist",
+                                      rym::path_text(whitelist),
+                                      "--offline",
+                                      "--top",
+                                      "1"};
+        args.insert(args.end(), option.begin(), option.end());
+        require(rym::application(args) == 1,
+                "Unsupported options and worker counts must fail parsing");
+        require(!std::filesystem::exists(cache),
+                "Invalid CLI must not initialize cache or retrieval");
+        require(rym::read_file(report) == "previous report", "Invalid CLI must preserve report");
     }
-    require(rym::read_file(parent / "cookie-marker") == "preserve",
-            "Persistent profile cookies survive teardown");
 }
 int main() {
     rym::install_cancellation();
@@ -433,11 +518,12 @@ int main() {
              {"distance oracle", distance_oracle},
              {"HTML parsing", parsing},
              {"chart acquisition", acquisition},
+             {"album workers", album_workers},
              {"tag priority", tag_priority},
              {"storage/scanning", storage_and_scan},
              {"CLI offline", cli_offline},
              {"resource moves", resource_moves},
-             {"profile cleanup", profile_cleanup},
+             {"CLI validation", cli_validation},
              {"lifecycle stress", stress}}) {
         try {
             function();

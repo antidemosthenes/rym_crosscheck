@@ -3,6 +3,8 @@
 #include "rym_crosscheck/rym/transport.hpp"
 #include <functional>
 namespace rym {
+inline constexpr std::size_t default_web_workers = 4;
+inline constexpr std::size_t max_web_workers = 8;
 Snapshot fetch_chart(Transport &transport, std::size_t top);
 void enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
                    const std::function<std::unique_ptr<Transport>()> &factory, std::size_t workers);

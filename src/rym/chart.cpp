@@ -42,6 +42,7 @@ Snapshot fetch_chart(Transport &transport, std::size_t top) {
 void enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
                    const std::function<std::unique_ptr<Transport>()> &factory,
                    std::size_t workers) {
+    workers = std::min(workers, max_web_workers);
     std::vector<std::size_t> jobs;
     for (const auto &row : missing)
         if (row.song.album.empty())

@@ -16,13 +16,12 @@ include(cmake/Dependencies.cmake)
 add_library(rym_core STATIC
   src/domain/runtime.cpp src/matching/normalize.cpp src/matching/index.cpp
   src/storage/files.cpp src/storage/cache.cpp src/storage/whitelist.cpp
-  src/library/scanner.cpp src/rym/parser.cpp src/rym/transport.cpp
+  src/library/scanner.cpp src/rym/parser.cpp
   src/rym/browser.cpp src/rym/chart.cpp src/report/markdown.cpp src/cli/application.cpp)
 target_include_directories(rym_core PUBLIC include)
-target_compile_definitions(rym_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE CURL_STATICLIB TAGLIB_STATIC)
+target_compile_definitions(rym_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE TAGLIB_STATIC)
 target_link_libraries(rym_core PUBLIC Boost::json Boost::unordered Boost::container
-  utf8proc lexbor_static CLI11::CLI11 tomlplusplus::tomlplusplus rym_taglib rym_curl
-  winhttp bcrypt normaliz ws2_32 crypt32 wldap32 advapi32 iphlpapi secur32)
+  utf8proc lexbor_static CLI11::CLI11 tomlplusplus::tomlplusplus rym_taglib winhttp)
 target_compile_options(rym_core PRIVATE /W4 /permissive- /Zc:__cplusplus /Zc:inline /Zc:lambda /utf-8
   $<$<CONFIG:Release>:/Ox;/Oi;/Gy;/favor:AMD64;/arch:AVX2;/fp:fast>)
 target_link_options(rym_core INTERFACE $<$<CONFIG:Release>:/OPT:REF;/OPT:ICF;/MACHINE:X64>)

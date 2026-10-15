@@ -59,24 +59,11 @@ rym_external(taglib "https://github.com/taglib/taglib/archive/refs/tags/v2.3.2.t
   CMAKE_ARGS ${common_args} -DBUILD_BINDINGS=OFF -DBUILD_EXAMPLES=OFF -DENABLE_STATIC_RUNTIME=OFF
     -Dutf8cpp_INCLUDE_DIR=${utf8cpp_headers} -DZLIB_INCLUDE_DIR=${RYM_STAGE}/include -DZLIB_LIBRARY=${RYM_STAGE}/lib/${RYM_ZLIB_NAME}
   BUILD_BYPRODUCTS "${RYM_STAGE}/lib/tag.lib")
-rym_external(curl "https://curl.se/download/curl-8.22.0.tar.xz" f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7 tar.xz
-  DEPENDS zlib_project
-  CMAKE_ARGS ${common_args} -DBUILD_CURL_EXE=OFF -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF
-    -DCURL_USE_SCHANNEL=ON -DCURL_USE_OPENSSL=OFF -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF
-    -DUSE_NGHTTP2=OFF -DUSE_LIBIDN2=OFF -DCURL_BROTLI=OFF -DCURL_ZSTD=OFF -DHTTP_ONLY=ON
-    -DCURL_USE_CMAKECONFIG=OFF -DCURL_ZLIB=ON -DZLIB_INCLUDE_DIR=${RYM_STAGE}/include -DZLIB_LIBRARY=${RYM_STAGE}/lib/${RYM_ZLIB_NAME}
-    -DCMAKE_DEBUG_POSTFIX= -DCURL_BUILD_TESTING=OFF
-  BUILD_BYPRODUCTS "${RYM_STAGE}/lib/libcurl.lib")
-foreach(pair IN ITEMS "taglib;tag.lib" "curl;libcurl.lib")
-  list(GET pair 0 name)
-  list(GET pair 1 library)
-  add_library(rym_${name} STATIC IMPORTED GLOBAL)
-  set_target_properties(rym_${name} PROPERTIES IMPORTED_LOCATION "${RYM_STAGE}/lib/${library}"
-    INTERFACE_INCLUDE_DIRECTORIES "${RYM_STAGE}/include;${RYM_STAGE}/include/taglib")
-  add_dependencies(rym_${name} ${name}_project)
-endforeach()
+add_library(rym_taglib STATIC IMPORTED GLOBAL)
+set_target_properties(rym_taglib PROPERTIES IMPORTED_LOCATION "${RYM_STAGE}/lib/tag.lib"
+  INTERFACE_INCLUDE_DIRECTORIES "${RYM_STAGE}/include;${RYM_STAGE}/include/taglib")
+add_dependencies(rym_taglib taglib_project)
 add_library(rym_zlib STATIC IMPORTED GLOBAL)
 set_target_properties(rym_zlib PROPERTIES IMPORTED_LOCATION "${RYM_STAGE}/lib/${RYM_ZLIB_NAME}")
 add_dependencies(rym_zlib zlib_project)
 set_property(TARGET rym_taglib APPEND PROPERTY INTERFACE_LINK_LIBRARIES rym_zlib)
-set_property(TARGET rym_curl APPEND PROPERTY INTERFACE_LINK_LIBRARIES rym_zlib)

@@ -7,19 +7,18 @@
 #include <CLI/CLI.hpp>
 #include <future>
 #include <iostream>
-#include <optional>
 
 namespace rym {
 int application(const std::vector<std::string> &arguments) {
     install_cancellation();
     std::string music, output = "missing.md", whitelist = "whitelist.toml",
-                       cache_dir = ".rym-crosscheck-cache", profile, mode = "browser";
+                       cache_dir = ".rym-crosscheck-cache", profile;
     std::string artist_value = "0.90", title_value = "0.85";
     std::size_t top = 200,
                 local_workers = std::clamp<std::size_t>(std::thread::hardware_concurrency(), 1, 8),
-                web_workers = 1;
+                web_workers = default_web_workers;
     int delay = 1000, verification = 300;
-    bool offline{}, clear{}, private_browser{}, persistent_browser{};
+    bool offline{}, clear{};
     CLI::App app{"Find missing songs from RYM's all-time song chart", "rym-crosscheck"};
     app.add_option("--music-dir", music, "Required local music folder")->required();
     app.add_option("--top", top, "Number of chart songs")
@@ -30,13 +29,11 @@ int application(const std::vector<std::string> &arguments) {
         app.add_option("--whitelist", whitelist, "TOML whitelist")->default_val(whitelist);
     app.add_option("--cache-dir", cache_dir, "Application cache")->default_val(cache_dir);
     app.add_option("--browser-profile", profile, "Dedicated Edge profile");
-    app.add_option("--web-mode", mode, "browser or http")
-        ->check(CLI::IsMember({"browser", "http"}))
-        ->default_val(mode);
     app.add_option("--local-workers", local_workers, "Tag-reading workers (1..64)")
         ->check(CLI::Range(1, 64));
-    app.add_option("--web-workers", web_workers, "Album lookup workers (1..16)")
-        ->check(CLI::Range(1, 16));
+    app.add_option("--web-workers", web_workers, "Album lookup workers (1..8)")
+        ->check(CLI::Range(1, static_cast<int>(max_web_workers)))
+        ->default_val(web_workers);
     app.add_option("--request-delay-ms", delay, "Global request start interval")
         ->check(CLI::NonNegativeNumber);
     app.add_option("--verification-timeout", verification, "Seconds to complete verification")
@@ -45,12 +42,6 @@ int application(const std::vector<std::string> &arguments) {
     app.add_option("--title-threshold", title_value, "Title similarity between 0 and 1");
     app.add_flag("--offline", offline, "Use a snapshot created by a previous live run");
     app.add_flag("--clear-cache", clear, "Clear application cache before comparison");
-    auto *private_option =
-        app.add_flag("--private-browser", private_browser,
-                     "Use an isolated temporary Edge profile; discard cookies after this run");
-    app.add_flag("--persistent-browser", persistent_browser,
-                 "Use the dedicated regular profile to retain verification cookies (default)")
-        ->excludes(private_option);
     std::vector<std::string> reversed(arguments.rbegin(), arguments.rend());
     if (!reversed.empty())
         reversed.pop_back();
@@ -61,8 +52,6 @@ int application(const std::vector<std::string> &arguments) {
         return error.get_exit_code() == 0 ? 0 : 1;
     }
     try {
-        if (persistent_browser)
-            private_browser = false;
         auto artist_cutoff = threshold(artist_value), title_cutoff = threshold(title_value);
         auto root =
             std::filesystem::absolute(std::filesystem::path(wide(music))).lexically_normal();
@@ -88,24 +77,19 @@ int application(const std::vector<std::string> &arguments) {
         Snapshot snapshot;
         Scan scan;
         Pacer pacer{std::chrono::milliseconds(delay)};
-        std::optional<BrowserProfile> selected_profile;
-        std::unique_ptr<Transport> transport;
+        std::unique_ptr<Browser> transport;
         if (offline)
             snapshot = cache.load_snapshot(top);
         else {
-            if (mode == "browser") {
-                selected_profile.emplace(profile.empty() ? default_profile()
-                                                         : std::filesystem::path(wide(profile)),
-                                         private_browser);
-                transport = std::make_unique<Browser>(selected_profile->path(), pacer);
-            } else
-                transport = std::make_unique<Http>(pacer);
+            auto selected_profile =
+                profile.empty() ? default_profile() : std::filesystem::path(wide(profile));
+            transport = std::make_unique<Browser>(selected_profile, pacer);
             try {
                 snapshot = fetch_chart(*transport, top);
             } catch (const VerificationRequired &) {
                 transport.reset();
-                verify_browser(selected_profile->path(), std::chrono::seconds(verification));
-                transport = std::make_unique<Browser>(selected_profile->path(), pacer);
+                verify_browser(selected_profile, std::chrono::seconds(verification));
+                transport = std::make_unique<Browser>(selected_profile, pacer);
                 snapshot = fetch_chart(*transport, top);
             }
         }
@@ -121,11 +105,7 @@ int application(const std::vector<std::string> &arguments) {
             missing.push_back({song, index.suggest(normalized, artist_cutoff, title_cutoff)});
         }
         if (!offline) {
-            auto factory = [&]() -> std::unique_ptr<Transport> {
-                if (auto *browser = dynamic_cast<Browser *>(transport.get()))
-                    return browser->fork();
-                return std::make_unique<Http>(pacer);
-            };
+            auto factory = [&] { return transport->fork(); };
             enrich_albums(missing, snapshot, factory, web_workers);
             for (auto &row : missing)
                 row.song.album = snapshot.songs[row.song.rank - 1].album;

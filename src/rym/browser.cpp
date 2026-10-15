@@ -123,6 +123,7 @@ class Session {
     std::unique_ptr<Socket> socket;
     Pacer &pacer;
     std::mutex commands;
+    std::stop_source restricted;
     std::string user_agent;
     std::int64_t sequence{};
     Session(std::filesystem::path path, Pacer &clock)
@@ -293,34 +294,6 @@ struct Browser::Data {
         }
     }
 };
-BrowserProfile::BrowserProfile(const std::filesystem::path &path, bool temporary)
-    : path_(prepare_profile(path)), temporary_(temporary) {
-    if (!temporary_)
-        return;
-    static std::atomic<std::uint64_t> sequence{};
-    const auto parent = path_;
-    for (;;) {
-        auto child = parent / (L".rym-private-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                               std::to_wstring(GetTickCount64()) + L"-" +
-                               std::to_wstring(sequence.fetch_add(1)));
-        if (std::filesystem::create_directory(child)) {
-            path_ = std::move(child);
-            return;
-        }
-    }
-}
-BrowserProfile::~BrowserProfile() noexcept {
-    if (!temporary_)
-        return;
-    try {
-        if (path_.is_absolute() && path_.filename().native().starts_with(L".rym-private-") &&
-            !std::filesystem::is_symlink(std::filesystem::symlink_status(path_))) {
-            std::error_code error;
-            std::filesystem::remove_all(path_, error);
-        }
-    } catch (...) {
-    }
-}
 void verify_browser(const std::filesystem::path &path, std::chrono::seconds timeout) {
     if (!interactive())
         throw Error("Verification requires an interactive terminal.");
@@ -408,7 +381,7 @@ std::unique_ptr<Transport> Browser::fork() {
 std::string Browser::fetch(std::string_view url) {
     auto target = site_url(url);
     auto &state = *data_->browser;
-    state.pacer.wait();
+    state.pacer.wait(state.restricted.get_token());
     state.command("Page.navigate", {{"url", target}}, data_->session);
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     while (std::chrono::steady_clock::now() < deadline) {
@@ -457,8 +430,9 @@ std::string Browser::fetch(std::string_view url) {
             continue;
         }
         if (challenged(html)) {
+            state.restricted.request_stop();
             if (!interactive())
-                throw Error("Cloudflare verification requires an interactive terminal; rerun "
+                throw Error("RYM verification requires an interactive terminal; rerun "
                             "interactively or use --offline.");
             throw VerificationRequired("RYM needs verification in an ordinary browser session.");
         } else if (ready == "complete" &&

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <mutex>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -57,6 +58,6 @@ class Pacer {
 
   public:
     explicit Pacer(std::chrono::milliseconds interval) noexcept : interval_(interval) {}
-    void wait();
+    void wait(std::stop_token stop = {});
 };
 }

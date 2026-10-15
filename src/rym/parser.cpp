@@ -179,6 +179,7 @@ std::string song_url(std::string_view value) {
 }
 bool challenged(std::string_view html) noexcept {
     return html.find("cf-chl-") != html.npos || html.find("_cf_chl_opt") != html.npos ||
+           html.find("<title>Security check required</title>") != html.npos ||
            html.find("<title>Just a moment") != html.npos ||
            html.find("<title>Attention Required") != html.npos;
 }

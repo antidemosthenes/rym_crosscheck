@@ -1,6 +1,8 @@
 # Architecture
 
-`domain` owns song, track, candidate, and snapshot records plus cancellation and Windows handle wrappers. `library` reads tags through a bounded worker queue. `rym` owns browser/HTTP transports and DOM parsing. `matching` owns immutable exact and fuzzy indexes. `storage` owns cache, whitelist, file locks, and atomic writes. `report` renders Markdown. `cli` coordinates these modules.
+For CLI usage and report interpretation, see the [README](../README.md). Build commands, cache administration, and test execution are documented in the [build](build.md), [runtime](runtime.md), and [testing](testing.md) guides.
+
+`domain` owns song, track, candidate, and snapshot records plus cancellation and Windows handle wrappers. `library` reads tags through a bounded worker queue. `rym` owns browser retrieval and DOM parsing. `matching` owns immutable exact and fuzzy indexes. `storage` owns cache, whitelist, file locks, and atomic writes. `report` renders Markdown. `cli` coordinates these modules.
 
 ## Matching guarantees
 
@@ -18,13 +20,15 @@ Records own their strings and paths. Index keys own their storage; postings cont
 
 Boost.JSON parsing resources are local to a command; returned records are copied into independently owned storage before the resource is destroyed. The top-three static vector is never temporarily overfilled.
 
-Local scanning uses bounded queues and joined workers. Web workers share request pacing; browser commands are serialized over the CDP socket while page loading can overlap in separate hidden targets. Headless retrieval targets use `hidden: true, background: true` and never activate a window. A blank bootstrap page initializes Edge before hidden targets are created. Retrieval keeps the browser user agent consistent with ordinary verification so cookies remain usable. Verification alone creates visible UI in ordinary Edge, which closes before further retrieval. The optional private mode owns a fresh temporary profile for both phases and removes it after all browser workers finish. Browser cookies are never copied into the HTTP client.
+Local scanning uses bounded queues and joined workers. Album enrichment defaults to four workers and caps the pool at eight or the number of jobs, whichever is smaller. Workers share page-navigation pacing; browser commands are serialized over the CDP socket while page loading can overlap in separate hidden targets. A detected security gate requests a shared stop token, preventing queued paced navigations from continuing. This pool limit does not cap every browser asset request or represent a published server quota.
+
+Headless retrieval targets use `hidden: true, background: true` and never activate a window. A blank bootstrap page initializes Edge before hidden targets are created. Retrieval keeps the browser user agent consistent with ordinary verification so cookies remain usable. Verification alone creates visible UI in ordinary Edge, which closes before further retrieval. Both phases use the same persistent profile; cookies remain inside Edge across runs.
 
 Non-throwing arithmetic, callbacks, accessors, and resource moves declare `noexcept`; owning records also retain their implicit non-throwing moves. Candidate tie-breaking compares native paths without allocating temporary UTF-8 strings. Allocation, parsing, I/O, synchronization, and cancellable scoring remain throwable. Destructors contain fallible cleanup rather than exposing exceptions across teardown or C callback boundaries.
 
 ## Failure and cleanup
 
-Chart rank gaps, conflicting records, unsupported markup, and access failures stop the comparison. Album failures are warnings and result in `Unknown`. Unresolved local files are listed prominently and produce exit code 2.
+Chart acquisition validates rank completeness and song identity before matching. Album enrichment is independent of ownership eligibility. Unresolved local files remain scan warnings rather than silently entering the ownership index.
 
 File locks serialize cache/profile ownership. Writes use sibling temporary files, flushing, and atomic replacement. RAII removes temporary writes and owns handles, sockets, subprocess jobs, and worker lifetimes. Cache pruning touches only application-owned filenames. Forced process termination can leave stale temporary files; cache startup removes its stale temporary writes.
 

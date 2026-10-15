@@ -99,17 +99,22 @@ FileLock::FileLock(const std::filesystem::path &path)
     if (!handle_)
         throw Error("Another run is using " + path_text(path) + ".");
 }
-void Pacer::wait() {
+void Pacer::wait(std::stop_token stop) {
     std::unique_lock lock(mutex_);
+    auto check = [&] {
+        check_cancelled();
+        if (stop.stop_requested())
+            throw Error("Request group stopped.");
+    };
     auto current = std::chrono::steady_clock::now();
     while (current < next_) {
-        check_cancelled();
+        check();
         std::this_thread::sleep_for(
             std::min(std::chrono::milliseconds(50),
                      std::chrono::duration_cast<std::chrono::milliseconds>(next_ - current)));
         current = std::chrono::steady_clock::now();
     }
-    check_cancelled();
+    check();
     next_ = current + interval_;
 }
 }

@@ -1,0 +1,47 @@
+name: Windows x64 release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-x64-release
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the triggering commit and version tags
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reuse verified dependency downloads
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: build/downloads
+          key: dependency-downloads-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake') }}
+
+      - name: Configure and build the Release CLI without tests
+        run: |
+          ./scripts/build.ps1 -Action configure -Preset release -BuildTests OFF
+          ./scripts/build.ps1 -Action build -Preset release
+
+      - name: Package and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/release.ps1 -Publish

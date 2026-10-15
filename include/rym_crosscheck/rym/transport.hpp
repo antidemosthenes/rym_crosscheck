@@ -6,30 +6,10 @@ class VerificationRequired : public Error {
     using Error::Error;
 };
 void verify_browser(const std::filesystem::path &profile, std::chrono::seconds timeout);
-class BrowserProfile {
-    std::filesystem::path path_;
-    bool temporary_{};
-
-  public:
-    BrowserProfile(const std::filesystem::path &path, bool temporary);
-    ~BrowserProfile() noexcept;
-    BrowserProfile(const BrowserProfile &) = delete;
-    BrowserProfile &operator=(const BrowserProfile &) = delete;
-    const std::filesystem::path &path() const noexcept {
-        return path_;
-    }
-};
 class Transport {
   public:
     virtual ~Transport() noexcept = default;
     virtual std::string fetch(std::string_view url) = 0;
-};
-class Http final : public Transport {
-    Pacer &pacer_;
-
-  public:
-    explicit Http(Pacer &pacer);
-    std::string fetch(std::string_view url) override;
 };
 class Browser final : public Transport {
     struct Data;
