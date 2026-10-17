@@ -402,7 +402,11 @@ function candidateCell(candidates) {
     block.append(element('div', `${candidate.artists.join(', ')} — ${candidate.title}`), element('div', candidate.path, 'path'));
     const title = (100 * candidate.title_score.numerator / candidate.title_score.denominator).toFixed(1) + '%';
     const artist = (100 * candidate.artist.numerator / candidate.artist.denominator).toFixed(1) + '%';
-    block.append(element('div', candidate.credit_gap ? `Credit mismatch · title ${title}` : `Artist ${artist} · title ${title}`, 'score'));
+    const labels = [];
+    if (candidate.credit_gap) labels.push('Credit mismatch');
+    if (candidate.version_gap) labels.push('Version differs');
+    labels.push(`Artist ${artist}`, `title ${title}`);
+    block.append(element('div', labels.join(' · '), 'score'));
     cell.append(block);
   }
   if (!candidates.length) cell.append(element('span', '—', 'muted'));

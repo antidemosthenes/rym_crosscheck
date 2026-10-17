@@ -12,6 +12,7 @@ struct ReportCandidate {
     std::string path;
     Fraction artist, title_score;
     bool credit_gap{};
+    bool version_gap{};
 };
 struct ReportSong {
     Song song;

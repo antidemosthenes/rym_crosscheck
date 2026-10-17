@@ -179,6 +179,8 @@ struct Index::Data {
     bool better(const Candidate &a, const Candidate &b) const noexcept {
         if (a.credit_gap != b.credit_gap)
             return !a.credit_gap;
+        if (a.version_gap != b.version_gap)
+            return !a.version_gap;
         const auto numerator = [](const Candidate &c) noexcept {
             return std::uint64_t(c.artist.numerator) * c.title.denominator +
                    std::uint64_t(c.title.numerator) * c.artist.denominator;
@@ -243,7 +245,8 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
     for (auto id : candidates) {
         check_cancelled();
         const auto &local = data_->identities[id];
-        if (local.version != query.version)
+        auto version_gap = review_versions(local.version, query.version);
+        if (local.version != query.version && !version_gap)
             continue;
         auto artist = artist_scores.find(data_->artist_ids[id]);
         auto gap = credit_gaps.contains(id);
@@ -254,7 +257,7 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
             continue;
         Candidate candidate{data_->representatives[id],
                             artist == artist_scores.end() ? Fraction{0, 1} : artist->second,
-                            title_score, gap};
+                            title_score, gap, version_gap};
         if (std::ranges::any_of(best, [&](const Candidate &existing) {
                 return existing.track_id == candidate.track_id;
             }))

@@ -84,7 +84,8 @@ Report compare_library(const Snapshot &snapshot, const Scan &scan,
                 auto display = path_text(relative);
                 relative_path(display);
                 row.candidates.push_back({track.title, track.artists, std::move(display),
-                                          candidate.artist, candidate.title, candidate.credit_gap});
+                                          candidate.artist, candidate.title, candidate.credit_gap,
+                                          candidate.version_gap});
             }
         }
         result.songs.push_back(std::move(row));
@@ -114,7 +115,8 @@ boost::json::object report_fields(const Report &report) {
                                     {"path", candidate.path},
                                     {"artist", score(candidate.artist)},
                                     {"title_score", score(candidate.title_score)},
-                                    {"credit_gap", candidate.credit_gap}});
+                                    {"credit_gap", candidate.credit_gap},
+                                    {"version_gap", candidate.version_gap}});
         songs.emplace_back(boost::json::object{{"rank", row.song.rank},
                                                {"title", row.song.title},
                                                {"artists", strings(row.song.artists)},
@@ -185,6 +187,8 @@ Report parse_report(const boost::json::value &json) {
                                   parse_score(candidate.at("artist")),
                                   parse_score(candidate.at("title_score")),
                                   candidate.at("credit_gap").as_bool()};
+            if (const auto *gap = candidate.if_contains("version_gap"))
+                match.version_gap = gap->as_bool();
             identity(match.title, match.artists);
             relative_path(match.path);
             record.candidates.push_back(std::move(match));

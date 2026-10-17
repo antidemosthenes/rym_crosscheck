@@ -79,6 +79,14 @@ void report_review_tests() {
                 restored.warnings == scan.warnings && restored.offline && restored.reused == 1,
             "JSON preserves Unicode, hostile text and scan context");
     require(restored.songs[1].candidates[0].path == "near.flac", "Candidate paths remain relative");
+    auto legacy = rym::report_json(report);
+    auto &legacy_candidate =
+        legacy["songs"].as_array()[1].as_object()["candidates"].as_array()[0].as_object();
+    legacy_candidate.erase("version_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].version_gap,
+            "Older reports without version-review flags remain readable");
+    legacy_candidate["version_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
     for (const auto *field : {"generated", "captured"}) {
         auto future = rym::report_json(report);
         future[field] = 253402300800LL;

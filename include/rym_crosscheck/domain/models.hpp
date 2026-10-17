@@ -30,6 +30,7 @@ struct Candidate {
     Fraction artist;
     Fraction title;
     bool credit_gap{};
+    bool version_gap{};
 };
 struct Missing {
     Song song;

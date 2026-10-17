@@ -7,6 +7,7 @@
 #include <numeric>
 #include <regex>
 #include <utf8proc.h>
+#include <utility>
 
 namespace rym {
 namespace {
@@ -15,14 +16,67 @@ bool whitespace(char32_t c) noexcept {
            (c >= 0x2000 && c <= 0x200a) || c == 0x2028 || c == 0x2029 || c == 0x202f ||
            c == 0x205f || c == 0x3000;
 }
+std::string_view trim(std::string_view value) noexcept {
+    while (!value.empty() && value.front() == ' ')
+        value.remove_prefix(1);
+    while (!value.empty() && value.back() == ' ')
+        value.remove_suffix(1);
+    return value;
+}
+bool quoted(std::string_view value) noexcept {
+    return value.size() > 2 && (value.front() == '"' || value.front() == '\'') &&
+           value.find(value.front(), 1) == value.size() - 1;
+}
+std::pair<std::string_view, std::string_view> edition_suffix(std::string_view value) noexcept {
+    std::size_t start = value.npos;
+    std::string_view label;
+    if (value.ends_with(')') || value.ends_with(']')) {
+        start = value.rfind(value.back() == ')' ? '(' : '[');
+        if (start != value.npos)
+            label = trim(value.substr(start + 1, value.size() - start - 2));
+    } else if ((start = value.rfind(" - ")) != value.npos)
+        label = trim(value.substr(start + 3));
+    if (label == "single version" || label == "album version")
+        return {trim(value.substr(0, start)), label};
+    return {value, {}};
+}
+std::string_view title_text(std::string_view value) {
+    static const std::regex remaster(
+        R"(\s*(?:\((?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?\)|\[(?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?\]| - (?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?)$)");
+    for (;;) {
+        value = trim(value);
+        if (quoted(value)) {
+            value = value.substr(1, value.size() - 2);
+            continue;
+        }
+        if (value.ends_with(')') || value.ends_with(']')) {
+            auto start = value.rfind(value.back() == ')' ? '(' : '[');
+            if (start != value.npos && start > 0) {
+                auto annotation = trim(value.substr(start + 1, value.size() - start - 2));
+                constexpr std::string_view prefix = "including ";
+                if (annotation.starts_with(prefix) &&
+                    quoted(trim(annotation.substr(prefix.size())))) {
+                    value = value.substr(0, start);
+                    continue;
+                }
+            }
+        }
+        std::match_results<std::string_view::const_iterator> match;
+        if (std::regex_search(value.begin(), value.end(), match, remaster)) {
+            value = value.substr(0, static_cast<std::size_t>(match.position()));
+            continue;
+        }
+        return value;
+    }
+}
 std::string version_of(std::string_view value) {
     static const std::regex qualifier(
         R"((?:\(|\[| - )(live|remix|[^\)\]]* remix|[^\)\]]* mix|acoustic|instrumental|demo|re-recorded|rerecorded|edit)(?:[^\)\]]*)(?:\)|\]|$))",
         std::regex::icase);
-    std::string input(value);
-    std::smatch match;
-    if (std::regex_search(input, match, qualifier))
-        return normalize(match.str()).text;
+    std::match_results<std::string_view::const_iterator> match;
+    if (std::regex_search(value.begin(), value.end(), match, qualifier))
+        return normalize(value.substr(static_cast<std::size_t>(match.position()), match.length()))
+            .text;
     return {};
 }
 }
@@ -70,18 +124,38 @@ Name normalize(std::string_view value, bool title) {
         result.text.append(reinterpret_cast<char *>(encoded), static_cast<std::size_t>(length));
     }
     if (title) {
-        static const std::regex remaster(
-            R"(\s*(?:\((?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?\)|\[(?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?\]| - (?:[0-9]{4} )?remaster(?:ed)?(?: [0-9]{4})?)$)");
-        auto trimmed = std::regex_replace(result.text, remaster, "");
-        if (trimmed != result.text)
-            return normalize(trimmed);
+        auto text = title_text(result.text);
+        if (text.find(" /") != text.npos || text.find("/ ") != text.npos) {
+            std::string compact;
+            compact.reserve(text.size());
+            for (std::size_t i = 0; i < text.size(); ++i) {
+                if (text[i] == '/') {
+                    if (!compact.empty() && compact.back() == ' ')
+                        compact.pop_back();
+                    compact += '/';
+                    while (i + 1 < text.size() && text[i + 1] == ' ')
+                        ++i;
+                } else
+                    compact += text[i];
+            }
+            return normalize(compact);
+        }
+        if (text.size() != result.text.size())
+            return normalize(text);
     }
     return result;
 }
 Identity identity(std::string_view title, const std::vector<std::string> &artists) {
     Identity result;
     result.title = normalize(title, true);
-    result.version = version_of(normalize(title).text);
+    auto [base, edition] = edition_suffix(result.title.text);
+    if (!edition.empty()) {
+        result.version = edition;
+        result.title = normalize(base, true);
+        if (auto recording = version_of(result.title.text); !recording.empty())
+            result.version = recording + " | " + result.version;
+    } else
+        result.version = version_of(result.title.text);
     for (const auto &artist : artists) {
         auto name = normalize(artist).text;
         if (!name.empty())
@@ -105,6 +179,12 @@ Identity identity(std::string_view title, const std::vector<std::string> &artist
         result.key += std::to_string(artist.size()) + ":" + artist;
     result.key += ":" + result.version;
     return result;
+}
+bool review_versions(std::string_view left, std::string_view right) noexcept {
+    auto edition = [](std::string_view value) noexcept {
+        return value.empty() || value == "single version" || value == "album version";
+    };
+    return left != right && edition(left) && edition(right);
 }
 Fraction threshold(std::string_view value) {
     if (value.empty() || value.size() > 8)

@@ -108,9 +108,22 @@ Keep personal data out of Git. The generated `data/` directory and legacy person
 
 ## Understanding results
 
-Exact ownership requires matching title, complete credited artists, and a compatible recording version. Normalization ignores case, Unicode representation, extra whitespace, typographic quotes/dashes, and explicit remaster suffixes. For example, `Title (2020 Remaster)` can match `Title`. Accents and meaningful punctuation remain significant. `Title (Live)` is distinct from `Title`; the word in `Live Forever` is not a recording label. Structured artist credit order can differ.
+Exact ownership requires matching title, complete credited artists, and a compatible recording version. Both RYM and local titles are normalized before exact or fuzzy comparison. Normalization ignores case, Unicode representation, extra whitespace, typographic quotes/dashes, explicit remaster suffixes, paired quotation marks surrounding a title, and spaces around `/`. A trailing included-section annotation such as `(Including 'Mirrors')` is optional. Original titles remain unchanged in the report.
 
-Fuzzy suggestions require **90% artist and 85% title similarity by default**, plus compatible versions. **Credit mismatch** suggestions can appear when the principal artist matches exactly and the title passes its threshold, while full credits differ. Scores measure text similarity, not ownership probability. Album names never determine ownership.
+| RYM title | Local title | Result with matching artist credits |
+| --- | --- | --- |
+| `"Heroes"` | `Heroes` | Owned |
+| `21st Century Schizoid Man (Including 'Mirrors')` | `21st Century Schizoid Man` | Owned |
+| `Weird Fishes / Arpeggi` | `Weird Fishes/ Arpeggi` | Owned |
+| `Enjoy the Silence` | `Enjoy The Silence [Single Version]` | Needs review: Version differs |
+
+Accents, internal apostrophes, meaningful punctuation, and ordinary section labels such as `(Part II)` remain significant. `Title (2020 Remaster)` can match `Title`, but `Title (Live)` remains distinct; the word in `Live Forever` is not a recording label. Structured artist credit order can differ.
+
+Fuzzy suggestions require **90% artist and 85% title similarity by default**, plus compatible versions. **Credit mismatch** suggestions can appear when the principal artist matches exactly and the title passes its threshold, while full credits differ. **Version differs** permits review between unqualified, explicitly labeled single-version, and album-version titles: scores use the base title, but differing labels never establish automatic ownership. Live, remix, demo, and other protected recording qualifiers remain incompatible with an unqualified recording. Scores measure text similarity, not ownership probability.
+
+**Albums have zero matching weight.** A song on a compilation or a different album can count as owned; album names are displayed for context only. An explicit version label in the title still matters regardless of the album.
+
+Run another comparison to apply updated matching rules to a saved report. Offline comparisons also use the new rules with their saved chart and the current library.
 
 | Display | Meaning |
 | --- | --- |

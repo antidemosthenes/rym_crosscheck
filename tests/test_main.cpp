@@ -72,7 +72,9 @@ rym::Song song(std::string title, std::vector<std::string> artists) {
 void equal_candidates(const auto &left, const auto &right) {
     require(left.size() == right.size(), "Indexed recall differs from exhaustive scorer");
     for (std::size_t i = 0; i < left.size(); ++i) {
-        require(left[i].track_id == right[i].track_id && left[i].credit_gap == right[i].credit_gap,
+        require(left[i].track_id == right[i].track_id &&
+                    left[i].credit_gap == right[i].credit_gap &&
+                    left[i].version_gap == right[i].version_gap,
                 "Indexed ranking differs");
         require(left[i].artist.numerator == right[i].artist.numerator &&
                     left[i].artist.denominator == right[i].artist.denominator &&
@@ -88,6 +90,21 @@ void normalization() {
     require(rym::normalize("Title (2022 Remaster)", true).text == "title", "Remaster suffix");
     require(rym::normalize("Title (Live)", true).text != "title", "Preserve live qualifier");
     require(rym::identity("Live Forever", {"Band"}).version.empty(), "Title word is not version");
+    require(rym::normalize("  “Heroes”  ", true).text == "heroes", "Title quotation marks");
+    require(rym::normalize("\"Heroes\" (2017 Remaster)", true).text == "heroes",
+            "Formatting and remaster normalization compose");
+    require(rym::normalize("Weird Fishes / Arpeggi", true).text == "weird fishes/arpeggi" &&
+                rym::normalize("Weird Fishes/ Arpeggi", true).text == "weird fishes/arpeggi",
+            "Title slash spacing is insignificant");
+    require(rym::normalize("Title (Including ‘Section’)", true).text == "title",
+            "Quoted included-section annotation is optional");
+    require(rym::normalize("Title (Part II)", true).text == "title (part ii)" &&
+                rym::normalize("Title (Including Live Intro)", true).text ==
+                    "title (including live intro)" &&
+                rym::normalize("\"Love\" and \"Hate\"", true).text == "\"love\" and \"hate\"" &&
+                rym::normalize("Don't Stop!", true).text == "don't stop!" &&
+                rym::normalize("AC / DC").text == "ac / dc",
+            "Meaningful title punctuation, sections, and artist names remain intact");
     require(rym::threshold("0.900000").numerator == 9, "Rational threshold");
     throws([] { rym::threshold("1.01"); });
     throws([] { rym::normalize(std::string(1, static_cast<char>(0xff))); });
@@ -95,6 +112,83 @@ void normalization() {
     require(rym::edit_distance(U"kitten", U"sitting", 2) > 2, "Cutoff reference");
     require(rym::passes(rym::similarity(U"abcdefghij", U"abcdxfghij", {9, 10}), {9, 10}),
             "Inclusive boundary");
+}
+void matching_examples() {
+    struct Example {
+        std::string artist, rym_title, local_title, rym_album, local_album;
+    };
+    const std::vector<Example> examples{
+        {"David Bowie", "\"Heroes\"", "Heroes", "\"Heroes\"", "Heroes"},
+        {"King Crimson", "21st Century Schizoid Man (Including 'Mirrors')",
+         "21st Century Schizoid Man", "In the Court of the Crimson King",
+         "In the Court of the Crimson King"},
+        {"Radiohead", "Weird Fishes / Arpeggi", "Weird Fishes/ Arpeggi", "In Rainbows",
+         "In Rainbows"},
+        {"Depeche Mode", "Enjoy the Silence", "Enjoy The Silence [Single Version]", "Violator",
+         "The Singles 86 - 98 (Disc 1)"}};
+    for (std::size_t i = 0; i < examples.size(); ++i) {
+        const auto &example = examples[i];
+        std::vector<rym::Track> tracks{track(example.local_title, {example.artist})};
+        tracks[0].album = example.local_album;
+        auto query = song(example.rym_title, {example.artist});
+        query.album = example.rym_album;
+        rym::Index index(tracks);
+        require(index.owns(query) == (i != 3), "Requested title-format ownership examples");
+        auto candidates = index.suggest(query, {9, 10}, {85, 100});
+        require(candidates.size() == 1 && candidates[0].version_gap == (i == 3) &&
+                    candidates[0].title.numerator == candidates[0].title.denominator,
+                "Normalized title scores and explicit version review");
+        equal_candidates(candidates, index.suggest(query, {9, 10}, {85, 100}, true));
+        std::vector<rym::Track> reverse{track(example.rym_title, {example.artist})};
+        require(rym::Index(reverse).owns(song(example.local_title, {example.artist})) == (i != 3),
+                "The same title normalization applies to both sources");
+        std::swap(query.album, tracks[0].album);
+        require(index.owns(query) == (i != 3), "Albums do not affect ownership");
+    }
+    std::vector<rym::Track> variants{
+        track("Enjoy the Silence [Single Version]", {"Depeche Mode"}, "single.flac"),
+        track("Enjoy the Silence (Album Version)", {"Depeche Mode"}, "album.flac"),
+        track("Enjoy the Silence (Live)", {"Depeche Mode"}, "live.flac"),
+        track("Enjoy the Silence (Remix)", {"Depeche Mode"}, "remix.flac")};
+    rym::Index index(variants);
+    require(index.unique_tracks() == variants.size(),
+            "Recording versions remain distinct editions");
+    auto query = song("Enjoy the Silence", {"Depeche Mode"});
+    auto candidates = index.suggest(query, {9, 10}, {85, 100});
+    require(!index.owns(query) && candidates.size() == 2 && candidates[0].version_gap &&
+                candidates[1].version_gap,
+            "Only single/album variants can suggest an unqualified recording");
+    for (const auto &title : {"Enjoy the Silence", "Enjoy the Silence [Single Version]",
+                              "Enjoy the Silence (Album Version)", "Enjoy the Silence (Live)"})
+        for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{85, 100}, rym::Fraction{1, 1}}) {
+            auto request = song(title, {"Depeche Mode"});
+            equal_candidates(index.suggest(request, {9, 10}, cutoff),
+                             index.suggest(request, {9, 10}, cutoff, true));
+        }
+    require(index.owns(song("Enjoy the Silence (Single Version)", {"Depeche Mode"})),
+            "Equivalent explicit edition labels match regardless of bracket style");
+    auto same_version = index.suggest(song("Enjoy the Silence (Single Version)", {"Depeche Mode"}),
+                                      {9, 10}, {85, 100});
+    require(!same_version.empty() && !same_version[0].version_gap,
+            "Same-version suggestions precede edition differences");
+    std::vector<rym::Track> protected_versions{
+        track("Enjoy the Silence (Live) [Single Version]", {"Depeche Mode"})};
+    require(rym::Index(protected_versions).suggest(query, {9, 10}, {85, 100}).empty(),
+            "Edition labels cannot hide a protected recording qualifier");
+    rym::Scan scan;
+    scan.tracks = variants;
+    auto report =
+        rym::compare_library({{query}, rym::now_seconds()}, scan, ".", true, {9, 10}, {85, 100});
+    auto restored = rym::parse_report(rym::report_json(report));
+    require(!restored.songs[0].owned && restored.songs[0].candidates.size() == 2 &&
+                restored.songs[0].candidates[0].version_gap,
+            "Version review survives report generation and JSON round trips");
+    auto exclusion = rym::Whitelist::parse("songs=[{title='Heroes',artist='David Bowie'}]");
+    require(exclusion.contains(song("\"Heroes\"", {"David Bowie"})),
+            "Artist/title whitelist uses the same normalization");
+    auto single = rym::Whitelist::parse(
+        "songs=[{title='Enjoy the Silence [Single Version]',artist='Depeche Mode'}]");
+    require(!single.contains(query), "Version-specific whitelist does not exclude other versions");
 }
 void matching() {
     std::vector<rym::Track> tracks{track("Alpha (2024 Remaster)", {"Band", "Guest"}, "z.mp3"),
@@ -784,6 +878,7 @@ int main(int argc, char **argv) {
     int failed{};
     for (const auto &[name, function] : std::vector<std::pair<std::string, std::function<void()>>>{
              {"normalization", normalization},
+             {"matching metadata examples", matching_examples},
              {"matching", matching},
              {"indexed oracle", oracle},
              {"distance oracle", distance_oracle},

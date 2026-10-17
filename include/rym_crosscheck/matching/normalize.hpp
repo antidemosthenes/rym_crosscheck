@@ -16,6 +16,7 @@ struct Identity {
 };
 Name normalize(std::string_view value, bool title = false);
 Identity identity(std::string_view title, const std::vector<std::string> &artists);
+bool review_versions(std::string_view left, std::string_view right) noexcept;
 Fraction threshold(std::string_view value);
 std::size_t edit_distance(std::u32string_view a, std::u32string_view b, std::size_t limit);
 Fraction similarity(std::u32string_view a, std::u32string_view b, Fraction cutoff);

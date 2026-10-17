@@ -33,6 +33,7 @@ Each helper `all` or `configure` invocation clears `build/` except `build/downlo
 The correctness executable uses synthetic data, reduced HTML fixtures, and temporary test directories. It does not access RYM, open Edge, or read your music library. It checks:
 
 - Unicode normalization, remaster/version handling, exact ownership, collaboration credits, duplicate editions, and threshold boundaries.
+- Quoted titles, slash spacing, quoted included-section annotations, album independence, symmetric RYM/local normalization, and single/album version review without relaxing live/remix protection. Version-review flags survive JSON round trips, and older reports without the optional flag remain readable.
 - Indexed suggestions against exhaustive scoring, plus bounded Levenshtein distance against an independent dynamic-programming reference.
 - Chart/song HTML parsing, RYM and Cloudflare restriction detection, fixture-based pagination, unrecognized-page deadlines, security/sign-in recovery in either order without losing ranks, bounded retries, failed handoffs, cancellation before navigation, and acquisition failures.
 - Album worker limits, exactly-once job assignment, job/result association, and stopping paced requests through a cancellation token. Security-page detection includes RYM's own verification gate.
