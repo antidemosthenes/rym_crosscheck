@@ -1,6 +1,8 @@
 /build/
 /.rym-crosscheck-cache/
 /missing.md
+/report/
+/data/
 /whitelist.toml
 *.tmp
 *.log

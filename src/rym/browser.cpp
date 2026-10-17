@@ -1,4 +1,5 @@
 #include "rym_crosscheck/rym/parser.hpp"
+#include "rym_crosscheck/rym/socket.hpp"
 #include "rym_crosscheck/rym/transport.hpp"
 #include "rym_crosscheck/storage/files.hpp"
 #include <algorithm>
@@ -6,17 +7,9 @@
 #include <charconv>
 #include <conio.h>
 #include <fstream>
-#include <winhttp.h>
 
 namespace rym {
 namespace {
-struct InternetClose {
-    void operator()(void *handle) const noexcept {
-        if (handle)
-            WinHttpCloseHandle(handle);
-    }
-};
-using Internet = std::unique_ptr<void, InternetClose>;
 std::wstring quote(std::wstring_view argument) {
     std::wstring result = L"\"";
     std::size_t slashes{};
@@ -45,82 +38,12 @@ std::filesystem::path edge_path() {
         }
     throw Error("Microsoft Edge is not installed in a standard location.");
 }
-class Socket {
-    Internet session_, connection_, socket_;
-
-  public:
-    explicit Socket(std::wstring_view endpoint) {
-        std::wstring url(endpoint);
-        if (url.starts_with(L"ws://"))
-            url.replace(0, 5, L"http://");
-        URL_COMPONENTS parts{};
-        parts.dwStructSize = sizeof(parts);
-        parts.dwHostNameLength = parts.dwUrlPathLength = static_cast<DWORD>(-1);
-        if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &parts))
-            throw Error("Invalid local browser endpoint.");
-        auto host = std::wstring(parts.lpszHostName, parts.dwHostNameLength);
-        if (host != L"127.0.0.1" && host != L"localhost")
-            throw Error("Browser endpoint must be local.");
-        session_.reset(
-            WinHttpOpen(L"rym-crosscheck/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY, nullptr, nullptr, 0));
-        if (!session_)
-            throw Error("Cannot initialize browser connection.");
-        WinHttpSetTimeouts(session_.get(), 2000, 2000, 2000, 2000);
-        connection_.reset(WinHttpConnect(session_.get(), host.c_str(), parts.nPort, 0));
-        Internet request(
-            WinHttpOpenRequest(connection_.get(), L"GET",
-                               std::wstring(parts.lpszUrlPath, parts.dwUrlPathLength).c_str(),
-                               nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0));
-        if (!request ||
-            !WinHttpSetOption(request.get(), WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET, nullptr, 0) ||
-            !WinHttpSendRequest(request.get(), WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                                WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-            !WinHttpReceiveResponse(request.get(), nullptr))
-            throw Error("Cannot connect to Edge debugging socket.");
-        socket_.reset(WinHttpWebSocketCompleteUpgrade(request.get(), 0));
-        if (!socket_)
-            throw Error("Edge WebSocket upgrade failed.");
-        DWORD timeout = 2000;
-        WinHttpSetOption(socket_.get(), WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-    }
-    void send(std::string &message) {
-        auto error =
-            WinHttpWebSocketSend(socket_.get(), WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE,
-                                 message.data(), static_cast<DWORD>(message.size()));
-        if (error)
-            throw Error("Browser disconnected while sending a command.");
-    }
-    std::string receive(bool cleanup) {
-        std::string message;
-        char buffer[32768];
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(cleanup ? 2 : 15);
-        for (;;) {
-            if (!cleanup)
-                check_cancelled();
-            DWORD bytes{};
-            WINHTTP_WEB_SOCKET_BUFFER_TYPE type{};
-            auto error =
-                WinHttpWebSocketReceive(socket_.get(), buffer, sizeof(buffer), &bytes, &type);
-            if (error == ERROR_WINHTTP_TIMEOUT && std::chrono::steady_clock::now() < deadline)
-                continue;
-            if (error || type == WINHTTP_WEB_SOCKET_CLOSE_BUFFER_TYPE)
-                throw Error("Browser disconnected or stopped responding.");
-            if (message.size() + bytes > 32 * 1024 * 1024)
-                throw Error("Browser message exceeds 32 MiB.");
-            message.append(buffer, bytes);
-            if (type == WINHTTP_WEB_SOCKET_UTF8_MESSAGE_BUFFER_TYPE)
-                return message;
-            if (std::chrono::steady_clock::now() >= deadline)
-                throw Error("Browser response timed out.");
-        }
-    }
-};
 class Session {
   public:
     std::filesystem::path profile;
     FileLock lock;
     Handle job, process;
-    std::unique_ptr<Socket> socket;
+    std::unique_ptr<BrowserSocket> socket;
     Pacer &pacer;
     std::mutex commands;
     std::stop_source restricted;
@@ -144,20 +67,15 @@ class Session {
             quote(executable.native()) + L" --user-data-dir=" + quote(profile.native()) +
             L" --remote-debugging-address=127.0.0.1 --remote-debugging-port=0 --disable-extensions "
             L"--no-first-run --no-default-browser-check --headless=new about:blank";
-        STARTUPINFOW startup{};
-        startup.cb = sizeof(startup);
-        PROCESS_INFORMATION info{};
-        if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
-                            CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &startup,
-                            &info))
-            throw Error("Cannot launch Edge.");
-        process = Handle(info.hProcess);
-        Handle thread(info.hThread);
+        auto child = create_quiet_process(executable, std::move(command));
+        process = std::move(child.process);
+        auto thread = std::move(child.thread);
         if (!AssignProcessToJobObject(job.get(), process.get())) {
             TerminateProcess(process.get(), 1);
             throw Error("Cannot own Edge process cleanup.");
         }
-        ResumeThread(thread.get());
+        if (ResumeThread(thread.get()) == DWORD(-1))
+            throw Error("Cannot resume the retrieval browser.");
         auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
         std::string port_text, socket_path;
         while (std::chrono::steady_clock::now() < deadline) {
@@ -177,7 +95,7 @@ class Session {
         if (code != std::errc{} || end != port_text.data() + port_text.size() || !port ||
             port > 65535 || socket_path.empty())
             throw Error("Edge did not publish a local debugging endpoint.");
-        socket = std::make_unique<Socket>(wide("ws://127.0.0.1:" + port_text + socket_path));
+        socket = std::make_unique<BrowserSocket>(wide("ws://127.0.0.1:" + port_text + socket_path));
         user_agent = this->command("Browser.getVersion").at("userAgent").as_string().c_str();
         // Keep retrieval identity consistent with cookies issued during visible verification.
         if (auto headless = user_agent.find("HeadlessChrome"); headless != user_agent.npos)
@@ -231,29 +149,36 @@ class Session {
         if (!session_id.empty())
             request["sessionId"] = session_id;
         auto encoded = boost::json::serialize(request);
-        socket->send(encoded);
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(cleanup ? 2 : 15);
+        socket->send(std::move(encoded), cleanup, deadline);
         for (;;) {
-            boost::json::monotonic_resource resource;
-            auto value = boost::json::parse(socket->receive(cleanup), &resource);
-            const auto &object = value.as_object();
-            auto *response_id = object.if_contains("id");
-            if (!response_id || response_id->to_number<std::int64_t>() != id)
-                continue;
-            if (auto *failure = object.if_contains("error"))
-                throw Error("Edge command failed: " + boost::json::serialize(*failure));
-            return boost::json::object(object.at("result").as_object(), boost::json::storage_ptr{});
+            auto response = browser_response(socket->receive(cleanup, deadline), id);
+            if (response)
+                return std::move(*response);
         }
     }
 };
 std::filesystem::path prepare_profile(const std::filesystem::path &path) {
     auto result = std::filesystem::absolute(path).lexically_normal();
     std::filesystem::create_directories(result);
-    if (std::filesystem::is_symlink(std::filesystem::symlink_status(result)))
-        throw Error("Browser profile cannot be a symbolic link.");
-    if (result.filename() == "User Data")
+    auto attributes = GetFileAttributesW(result.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        throw Error("Browser profile must be a normal directory, not a directory link.");
+    if (_wcsicmp(result.filename().c_str(), L"User Data") == 0)
         throw Error("Use a dedicated application profile, not personal browser User Data.");
     return result;
 }
+}
+std::optional<boost::json::object> browser_response(std::string_view message, std::int64_t id) {
+    auto storage = boost::json::make_shared_resource<boost::json::monotonic_resource>();
+    auto value = boost::json::parse(message, storage);
+    auto &object = value.as_object();
+    auto *response_id = object.if_contains("id");
+    if (!response_id || response_id->to_number<std::int64_t>() != id)
+        return std::nullopt;
+    if (auto *failure = object.if_contains("error"))
+        throw Error("Edge command failed: " + boost::json::serialize(*failure));
+    return std::move(object.at("result").as_object());
 }
 struct Browser::Data {
     std::shared_ptr<Session> browser;
@@ -294,9 +219,11 @@ struct Browser::Data {
         }
     }
 };
-void verify_browser(const std::filesystem::path &path, std::chrono::seconds timeout) {
-    if (!interactive())
-        throw Error("Verification requires an interactive terminal.");
+void resolve_browser_access(const std::filesystem::path &path, std::chrono::seconds timeout,
+                            bool launcher, std::string_view url, AccessReason reason) {
+    if (!interactive() && !launcher)
+        throw Error("RYM browser access requires an interactive terminal or the GUI launcher.");
+    auto target = site_url(url);
     auto profile = prepare_profile(path);
     FileLock lock(profile / L"rym-run.lock");
     Handle job(CreateJobObjectW(nullptr, nullptr)), process;
@@ -334,28 +261,34 @@ void verify_browser(const std::filesystem::path &path, std::chrono::seconds time
     } cleanup{job.get()};
     auto executable = edge_path();
     auto command = quote(executable.native()) + L" --user-data-dir=" + quote(profile.native()) +
-                   L" --disable-extensions --no-first-run --no-default-browser-check "
-                   L"https://rateyourmusic.com/charts/top/song/all-time/";
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    PROCESS_INFORMATION info{};
-    if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
-                        CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP, nullptr, nullptr, &startup,
-                        &info))
-        throw Error("Cannot open normal verification browser.");
-    process = Handle(info.hProcess);
-    Handle thread(info.hThread);
+                   L" --disable-extensions --no-first-run --no-default-browser-check " +
+                   quote(wide(target));
+    auto child = create_quiet_process(executable, std::move(command));
+    process = std::move(child.process);
+    auto thread = std::move(child.thread);
     if (!AssignProcessToJobObject(job.get(), process.get())) {
         TerminateProcess(process.get(), 1);
         throw Error("Cannot own verification browser cleanup.");
     }
-    ResumeThread(thread.get());
-    log("Complete verification in normal Edge (extensions disabled), then press Enter in this "
-        "terminal or close that browser window. The program will reuse its cookies.");
+    if (ResumeThread(thread.get()) == DWORD(-1))
+        throw Error("Cannot resume the access browser.");
+    log("If RYM shows its own restriction form, complete reCAPTCHA, click Submit, "
+        "and wait for the chart to appear before continuing. Comments and email are optional.");
+    if (reason == AccessReason::sign_in)
+        log("RYM requested sign-in. Sign in manually in this dedicated Edge window and wait for "
+            "the chart or your signed-in homepage. Choose Remember me if offered and desired. "
+            "The program will retry the chart using the session retained inside Edge.");
+    if (launcher)
+        log("Complete the requested RYM access steps in Edge, then close that browser window "
+            "to continue. For security checks, wait for the chart first. Cookies are retained.");
+    else
+        log("Complete the requested RYM access steps in Edge, then press Enter in this terminal "
+            "or close that browser window. For security checks, wait for the chart first. "
+            "The program will reuse its cookies.");
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
         check_cancelled();
-        if (_kbhit()) {
+        if (!launcher && _kbhit()) {
             auto key = _getwch();
             if (key == L'\r' || key == L'\n')
                 return;
@@ -367,33 +300,97 @@ void verify_browser(const std::filesystem::path &path, std::chrono::seconds time
             return;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    throw Error("Normal-browser verification timed out; previous report preserved.");
+    throw Error(reason == AccessReason::sign_in
+                    ? "RYM sign-in timed out; previous report preserved."
+                    : "Normal-browser verification timed out; previous report preserved.");
 }
-Browser::Browser(const std::filesystem::path &profile, Pacer &pacer)
-    : data_(std::make_unique<Data>(std::make_shared<Session>(prepare_profile(profile), pacer))) {}
+Browser::Browser(const std::filesystem::path &profile, Pacer &pacer, bool launcher)
+    : data_(std::make_unique<Data>(std::make_shared<Session>(prepare_profile(profile), pacer))),
+      launcher_(launcher) {}
 Browser::Browser(std::unique_ptr<Data> data) noexcept : data_(std::move(data)) {}
 Browser::~Browser() noexcept = default;
 Browser::Browser(Browser &&) noexcept = default;
 Browser &Browser::operator=(Browser &&) noexcept = default;
 std::unique_ptr<Transport> Browser::fork() {
-    return std::unique_ptr<Transport>(new Browser(std::make_unique<Data>(data_->browser)));
+    auto result = std::unique_ptr<Browser>(new Browser(std::make_unique<Data>(data_->browser)));
+    result->launcher_ = launcher_;
+    return result;
+}
+BrowserPageState browser_page_state(std::string_view current, std::string_view requested,
+                                    std::string_view ready, std::string_view html,
+                                    bool expired) noexcept {
+    if (challenged(html))
+        return BrowserPageState::verification;
+    auto access_url = current.substr(0, current.find_first_of("?#"));
+    while (access_url.ends_with('/'))
+        access_url.remove_suffix(1);
+    if (access_url == "https://rateyourmusic.com/account/login")
+        return BrowserPageState::sign_in;
+    auto canonical = [](std::string_view value) noexcept {
+        value = value.substr(0, value.find('#'));
+        while (value.ends_with('/'))
+            value.remove_suffix(1);
+        return value;
+    };
+    if (!html.empty() && canonical(current) == canonical(requested) && ready == "complete" &&
+        (requested.find("/charts/") == requested.npos ||
+         html.find("page_charts_section_charts_item") != html.npos))
+        return BrowserPageState::ready;
+    return expired ? BrowserPageState::verification : BrowserPageState::loading;
+}
+AccessTransport::AccessTransport(std::function<std::string(std::string_view)> fetch,
+                                 std::function<void(std::string_view, AccessReason)> recover)
+    : fetch_(std::move(fetch)), recover_(std::move(recover)) {}
+std::string AccessTransport::fetch(std::string_view url) {
+    bool verified{}, signed_in{};
+    for (;;) {
+        try {
+            check_cancelled();
+            return fetch_(url);
+        } catch (const VerificationRequired &) {
+            if (verified)
+                throw Error(
+                    "RYM page is still unusable after browser verification: " + std::string(url) +
+                    ". Access may remain blocked or chart markup changed. "
+                    "The previous report is preserved.");
+            verified = true;
+            check_cancelled();
+            recover_(url, AccessReason::verification);
+        } catch (const SignInRequired &) {
+            if (signed_in)
+                throw Error("RYM still requests sign-in for " + std::string(url) +
+                            ". Complete sign-in before closing Edge; the chart or your signed-in "
+                            "homepage is acceptable. "
+                            "The previous report is preserved.");
+            signed_in = true;
+            check_cancelled();
+            recover_(url, AccessReason::sign_in);
+        }
+    }
 }
 std::string Browser::fetch(std::string_view url) {
     auto target = site_url(url);
     auto &state = *data_->browser;
     state.pacer.wait(state.restricted.get_token());
-    state.command("Page.navigate", {{"url", target}}, data_->session);
+    auto navigation = state.command("Page.navigate", {{"url", target}}, data_->session);
+    if (auto *failure = navigation.if_contains("errorText");
+        failure && !failure->as_string().empty())
+        throw Error("Cannot navigate to " + target + ": " + std::string(failure->as_string()));
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (std::chrono::steady_clock::now() < deadline) {
+    for (;;) {
         check_cancelled();
-        boost::json::object evaluated;
+        if (std::chrono::steady_clock::now() >= deadline) {
+            state.restricted.request_stop();
+            throw VerificationRequired("RYM did not provide a usable hidden page: " + target);
+        }
+        std::optional<boost::json::object> evaluated;
         try {
-            evaluated = state.command(
+            evaluated.emplace(state.command(
                 "Runtime.evaluate",
                 {{"expression", "({url:location.href,ready:document.readyState,html:document."
                                 "documentElement?document.documentElement.outerHTML:''})"},
                  {"returnByValue", true}},
-                data_->session);
+                data_->session));
         } catch (const Error &error) {
             check_cancelled();
             if (!state.alive() || std::string_view(error.what()).find("Edge command failed:") ==
@@ -402,48 +399,38 @@ std::string Browser::fetch(std::string_view url) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        auto *result = evaluated.if_contains("result");
+        auto *result = evaluated->if_contains("result");
         if (!result || !result->is_object() || !result->as_object().if_contains("value")) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
         const auto &value = result->as_object().at("value").as_object();
-        auto current = std::string(value.at("url").as_string());
-        auto html = std::string(value.at("html").as_string());
-        auto ready = value.at("ready").as_string();
-        if (current == "about:blank" || html.empty()) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
-        if (!current.starts_with("https://rateyourmusic.com/"))
-            throw Error("Browser navigated outside RYM.");
-        auto canonical = [](std::string value) {
-            auto fragment = value.find('#');
-            if (fragment != value.npos)
-                value.resize(fragment);
-            while (value.ends_with('/'))
-                value.pop_back();
-            return value;
+        auto field = [&](boost::json::string_view key) {
+            const auto &text = value.at(key).as_string();
+            return std::string_view(text.data(), text.size());
         };
-        if (!challenged(html) && canonical(current) != canonical(target)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
-        if (challenged(html)) {
+        auto current = field("url"), html = field("html"), ready = field("ready");
+        if (current != "about:blank" && !current.starts_with("https://rateyourmusic.com/"))
+            throw Error("Browser navigated outside RYM.");
+        const auto status = browser_page_state(current, target, ready, html);
+        if (status == BrowserPageState::sign_in) {
             state.restricted.request_stop();
-            if (!interactive())
+            throw SignInRequired("RYM redirected " + target + " to " + std::string(current) +
+                                 " and returned a sign-in page instead of chart data. "
+                                 "The previous report is preserved.");
+        }
+        if (status == BrowserPageState::verification) {
+            state.restricted.request_stop();
+            if (!interactive() && !launcher_)
                 throw Error("RYM verification requires an interactive terminal; rerun "
                             "interactively or use --offline.");
             throw VerificationRequired("RYM needs verification in an ordinary browser session.");
-        } else if (ready == "complete" &&
-                   (target.find("/charts/") == std::string::npos ||
-                    html.find("page_charts_section_charts_item") != std::string::npos)) {
+        } else if (status == BrowserPageState::ready) {
             if (html.size() > 16 * 1024 * 1024)
                 throw Error("HTML exceeds 16 MiB.");
-            return html;
+            return std::string(html);
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
     }
-    throw Error("RYM page did not become usable; access may be blocked or markup changed.");
 }
 }

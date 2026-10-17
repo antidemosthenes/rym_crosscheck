@@ -5,7 +5,8 @@
 #include <boost/unordered/unordered_flat_set.hpp>
 
 namespace rym {
-Snapshot fetch_chart(Transport &transport, std::size_t top) {
+Snapshot fetch_chart(Transport &transport, std::size_t top,
+                     const std::function<void(std::size_t)> &progress) {
     Snapshot snapshot;
     snapshot.captured = now_seconds();
     std::string current = snapshot.source;
@@ -27,6 +28,8 @@ Snapshot fetch_chart(Transport &transport, std::size_t top) {
                 } else
                     ranks.emplace(song.rank, std::move(song));
             }
+        if (progress)
+            progress(ranks.size());
         if (ranks.size() >= top)
             break;
         if (page.next.empty())

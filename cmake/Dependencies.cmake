@@ -1,17 +1,14 @@
 include(FetchContent)
 include(ExternalProject)
+include("${CMAKE_CURRENT_LIST_DIR}/ArchiveCache.cmake")
 set(CMAKE_TLS_VERIFY ON)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
 add_compile_options(/utf-8)
 set(RYM_DOWNLOADS "${CMAKE_SOURCE_DIR}/build/downloads")
 function(rym_archive name url hash extension)
-  set(archive "${RYM_DOWNLOADS}/${name}.${extension}")
-  if(EXISTS "${archive}")
-    set(url "${archive}")
-  endif()
-  FetchContent_Declare(${name} URL "${url}" URL_HASH "SHA256=${hash}"
-    DOWNLOAD_DIR "${RYM_DOWNLOADS}" DOWNLOAD_NAME "${name}.${extension}"
+  rym_cached_archive(archive "${name}" "${url}" "${hash}" "${extension}")
+  FetchContent_Declare(${name} URL "${archive}" URL_HASH "SHA256=${hash}"
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE EXCLUDE_FROM_ALL SYSTEM)
 endfunction()
 set(BOOST_INCLUDE_LIBRARIES "unordered;container;json" CACHE STRING "" FORCE)
@@ -30,6 +27,13 @@ rym_archive(lexbor "https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.ta
 rym_archive(cli11 "https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.7.2.tar.gz" 46eef3101da70852ec7af026e09d485ccee81813331c8c6052d39344443b83da tar.gz)
 rym_archive(tomlplusplus "https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz" 8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155 tar.gz)
 FetchContent_MakeAvailable(boost utf8proc lexbor cli11 tomlplusplus)
+rym_archive(webview2 "https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg" 56f7f4b8bf9aee4b8efefbbdd4f67d5f74ebd1b100ed0806da71bf76af481aa9 zip)
+FetchContent_MakeAvailable(webview2)
+add_library(rym_webview2 STATIC IMPORTED GLOBAL)
+set_target_properties(rym_webview2 PROPERTIES
+  IMPORTED_LOCATION "${webview2_SOURCE_DIR}/build/native/x64/WebView2LoaderStatic.lib"
+  INTERFACE_INCLUDE_DIRECTORIES "${webview2_SOURCE_DIR}/build/native/include"
+  INTERFACE_LINK_LIBRARIES version)
 set(RYM_STAGE "${CMAKE_BINARY_DIR}/stage")
 set(RYM_ZLIB_NAME zs.lib)
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -39,12 +43,8 @@ file(MAKE_DIRECTORY "${RYM_STAGE}/include" "${RYM_STAGE}/include/taglib")
 set(common_args -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} -DCMAKE_INSTALL_PREFIX=${RYM_STAGE}
   -DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY} "-DCMAKE_C_FLAGS=/DWIN32 /D_WINDOWS /utf-8" "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /utf-8" -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF)
 function(rym_external name url hash extension)
-  set(archive "${RYM_DOWNLOADS}/${name}.${extension}")
-  if(EXISTS "${archive}")
-    set(url "${archive}")
-  endif()
-  ExternalProject_Add(${name}_project URL "${url}" URL_HASH SHA256=${hash}
-    DOWNLOAD_DIR "${RYM_DOWNLOADS}" DOWNLOAD_NAME "${name}.${extension}"
+  rym_cached_archive(archive "${name}" "${url}" "${hash}" "${extension}")
+  ExternalProject_Add(${name}_project URL "${archive}" URL_HASH SHA256=${hash}
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE ${ARGN})
 endfunction()
 rym_external(zlib "https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz" b99a0b86c0ba9360ec7e78c4f1e43b1cbdf1e6936c8fa0f6835c0cd694a495a1 tar.gz

@@ -1,7 +1,9 @@
 #include "rym_crosscheck/domain/runtime.hpp"
+#include <cstddef>
 #include <io.h>
 #include <iostream>
 #include <utility>
+#include <vector>
 
 namespace rym {
 std::atomic_bool cancelled{};
@@ -23,7 +25,8 @@ void install_cancellation() noexcept {
     SetConsoleCtrlHandler(control, TRUE);
 }
 bool interactive() noexcept {
-    return _isatty(_fileno(stdin)) != 0;
+    DWORD mode{};
+    return _isatty(_fileno(stdin)) != 0 && GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mode);
 }
 std::wstring wide(std::string_view value) {
     if (value.empty())
@@ -93,11 +96,55 @@ Handle &Handle::operator=(Handle &&other) noexcept {
     }
     return *this;
 }
+QuietProcess create_quiet_process(const std::filesystem::path &executable, std::wstring command) {
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    Handle sink(CreateFileW(L"NUL", GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, &security, OPEN_EXISTING, 0,
+                            nullptr));
+    if (!sink)
+        throw Error("Cannot isolate browser standard streams.");
+    SIZE_T bytes{};
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &bytes);
+    if (!bytes)
+        throw Error("Cannot size browser process attributes.");
+    std::vector<std::byte> storage(bytes);
+    auto *attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(storage.data());
+    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &bytes))
+        throw Error("Cannot initialize browser process attributes.");
+    struct Cleanup {
+        LPPROC_THREAD_ATTRIBUTE_LIST list;
+        ~Cleanup() noexcept {
+            DeleteProcThreadAttributeList(list);
+        }
+    } cleanup{attributes};
+    auto inherited = sink.get();
+    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &inherited,
+                                   sizeof(inherited), nullptr, nullptr))
+        throw Error("Cannot restrict browser handle inheritance.");
+    STARTUPINFOEXW startup{};
+    startup.StartupInfo.cb = sizeof(startup);
+    startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup.StartupInfo.hStdInput = startup.StartupInfo.hStdOutput = startup.StartupInfo.hStdError =
+        sink.get();
+    startup.lpAttributeList = attributes;
+    PROCESS_INFORMATION info{};
+    if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
+                        CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | EXTENDED_STARTUPINFO_PRESENT,
+                        nullptr, nullptr, &startup.StartupInfo, &info))
+        throw Error("Cannot launch browser process (Windows error " +
+                    std::to_string(GetLastError()) + ").");
+    return {Handle(info.hProcess), Handle(info.hThread)};
+}
 FileLock::FileLock(const std::filesystem::path &path)
     : handle_(CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_ALWAYS,
                           FILE_ATTRIBUTE_NORMAL, nullptr)) {
-    if (!handle_)
-        throw Error("Another run is using " + path_text(path) + ".");
+    if (!handle_) {
+        auto failure = GetLastError();
+        if (failure == ERROR_SHARING_VIOLATION || failure == ERROR_LOCK_VIOLATION)
+            throw Error("Another run is using " + path_text(path) + ".");
+        throw Error("Cannot open lock file " + path_text(path) + " (Windows error " +
+                    std::to_string(failure) + ").");
+    }
 }
 void Pacer::wait(std::stop_token stop) {
     std::unique_lock lock(mutex_);

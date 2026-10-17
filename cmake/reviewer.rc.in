@@ -1,0 +1,3 @@
+#pragma code_page(65001)
+101 RCDATA "@CMAKE_CURRENT_SOURCE_DIR@/ui/reviewer.html"
+1 24 "@CMAKE_CURRENT_SOURCE_DIR@/ui/reviewer.manifest"

@@ -8,8 +8,9 @@ constexpr std::int64_t schema = 1;
 std::filesystem::path prepare(std::filesystem::path path) {
     path = std::filesystem::absolute(path).lexically_normal();
     std::filesystem::create_directories(path);
-    if (std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
-        throw Error("Cache directory cannot be a symbolic link.");
+    auto attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        throw Error("Cache directory must be a normal directory, not a directory link.");
     return path;
 }
 boost::json::array strings(const std::vector<std::string> &values) {
@@ -18,10 +19,19 @@ boost::json::array strings(const std::vector<std::string> &values) {
         result.emplace_back(boost::json::string_view(v.data(), v.size()));
     return result;
 }
+std::string string(const boost::json::value &value) {
+    const auto &source = value.as_string();
+    std::string result(source.data(), source.size());
+    if (result.find('\0') != result.npos)
+        throw Error("Cached text contains a null character.");
+    wide(result);
+    return result;
+}
 std::vector<std::string> strings(const boost::json::value &value) {
     std::vector<std::string> result;
+    result.reserve(value.as_array().size());
     for (const auto &v : value.as_array())
-        result.emplace_back(v.as_string().c_str());
+        result.push_back(string(v));
     return result;
 }
 std::string root_key(const std::filesystem::path &root) {
@@ -34,6 +44,9 @@ Cache::Cache(std::filesystem::path root, bool clear)
         for (const auto *name : {"tracks.json", "chart.json"}) {
             std::error_code error;
             std::filesystem::remove(root_ / name, error);
+            if (error)
+                throw Error("Cannot clear cache record " + path_text(root_ / name) + ": " +
+                            error.message());
         }
     prune();
 }
@@ -50,10 +63,10 @@ Cache::load_tracks(const std::filesystem::path &root) const {
         for (const auto &entry : data.at("tracks").as_array()) {
             const auto &v = entry.as_object();
             Track track;
-            track.path = wide(v.at("path").as_string().c_str());
-            track.title = v.at("title").as_string().c_str();
+            track.path = wide(string(v.at("path")));
+            track.title = string(v.at("title"));
             track.artists = strings(v.at("artists"));
-            track.album = v.at("album").as_string().c_str();
+            track.album = string(v.at("album"));
             track.size = v.at("size").to_number<std::uintmax_t>();
             track.modified = v.at("modified").as_int64();
             result.emplace(path_text(track.path), std::move(track));
@@ -103,13 +116,15 @@ Snapshot Cache::load_snapshot(std::size_t top) const {
         throw Error("Cached chart version is incompatible.");
     Snapshot snapshot;
     snapshot.captured = data.at("captured").as_int64();
-    snapshot.source = data.at("source").as_string().c_str();
+    auto source = string(data.at("source"));
+    if (source != snapshot.source || snapshot.captured < 0 || snapshot.captured > 253402300799LL)
+        throw Error("Cached chart source/date is invalid.");
+    snapshot.songs.reserve(data.at("songs").as_array().size());
     for (const auto &entry : data.at("songs").as_array()) {
         const auto &v = entry.as_object();
-        snapshot.songs.push_back({v.at("rank").to_number<std::size_t>(),
-                                  v.at("title").as_string().c_str(), strings(v.at("artists")),
-                                  v.at("album").as_string().c_str(),
-                                  v.at("url").as_string().c_str()});
+        snapshot.songs.push_back({v.at("rank").to_number<std::size_t>(), string(v.at("title")),
+                                  strings(v.at("artists")), string(v.at("album")),
+                                  string(v.at("url"))});
     }
     validate_chart(snapshot.songs, top);
     snapshot.songs.resize(top);

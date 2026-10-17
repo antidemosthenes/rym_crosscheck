@@ -83,27 +83,25 @@ class NameIndex {
         for (const auto &[gram, count] : query_grams)
             if (auto found = postings_.find(gram); found != postings_.end())
                 posting_work += found->second.size();
-        if (m < 3 || posting_work > compatible * 2) {
+        if (posting_work > compatible * 2) {
             fallback();
             return result;
         }
         boost::unordered_flat_map<std::size_t, std::size_t> overlap;
-        if (!exhaustive && m >= 3) {
-            for (auto [gram, count] : query_grams) {
-                auto found = postings_.find(gram);
-                if (found == postings_.end())
-                    continue;
-                for (auto posting : found->second)
-                    if (lengths_[posting.id] >= low && lengths_[posting.id] <= high)
-                        overlap[posting.id] += std::min(count, posting.count);
-            }
+        for (auto [gram, count] : query_grams) {
+            auto found = postings_.find(gram);
+            if (found == postings_.end())
+                continue;
+            for (auto posting : found->second)
+                if (lengths_[posting.id] >= low && lengths_[posting.id] <= high)
+                    overlap[posting.id] += std::min(count, posting.count);
         }
         for (const auto &[length, ids] : buckets_) {
             if (length < low || length > high)
                 continue;
             auto k = (b - a) * std::max(m, length) / b;
             auto count = std::max(m >= 3 ? m - 2 : 0, length >= 3 ? length - 2 : 0);
-            if (exhaustive || m < 3 || length < 3 || count <= 3 * k)
+            if (length < 3 || count <= 3 * k)
                 result.insert(result.end(), ids.begin(), ids.end());
             else {
                 auto required = count - 3 * k;
@@ -231,7 +229,9 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
         if (passes(score, artist_cutoff))
             artist_scores.emplace(id, score);
     }
-    auto candidates = data_->title_index.query(query.title.points, title_cutoff, exhaustive);
+    auto candidates = artist_scores.empty()
+                          ? std::vector<std::size_t>{}
+                          : data_->title_index.query(query.title.points, title_cutoff, exhaustive);
     boost::unordered_flat_set<std::size_t> credit_gaps;
     if (auto found = data_->principals.find(query.principal); found != data_->principals.end())
         for (auto id : found->second)

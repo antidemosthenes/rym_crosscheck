@@ -1,149 +1,174 @@
 # RYM cross-check
 
-Find songs in [RYM's top all-time song chart](https://rateyourmusic.com/charts/top/song/all-time/) that are missing from your local MP3, FLAC, and M4A library. Confirmed local matches and whitelist entries are excluded. Uncertain matches stay in a Markdown report for you to review.
+Find songs in [RYM’s top all-time song chart](https://rateyourmusic.com/charts/top/song/all-time/) that are missing from your local MP3, FLAC, and M4A library. Review uncertain matches and manage exclusions in a small desktop reviewer.
 
 ## Quick start
 
-Download the Windows x64 `.7z` archive from [Releases](https://github.com/antidemosthenes/rym_crosscheck/releases) and extract it. The optimized executable requires an AVX2-capable CPU and the [Microsoft Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). Live comparisons require Microsoft Edge and internet access. To compile it yourself, follow the [build guide](docs/build.md).
+Download and extract the Windows x64 `.7z` from [Releases](https://github.com/antidemosthenes/rym_crosscheck/releases). Keep this layout together:
 
-From the extracted folder, replace `PATH/TO/MUSIC` with your music directory. Source-build users can substitute `./build/release/bin/rym-crosscheck.exe` for `./rym-crosscheck.exe` in these commands:
-
-```powershell
-./rym-crosscheck.exe --music-dir 'PATH/TO/MUSIC'
+```text
+missing-report.exe
+bin/
+  rym-crosscheck.exe
+data/
+  missing.json
+  whitelist.toml
+  settings.toml
+  cache/
 ```
 
-This compares the top **200** songs and writes **`missing.md`** in the working directory. Your music directory is always required; there is no default music path. Quote paths containing spaces. All relative paths resolve from the directory where you run the command.
+The optimized programs require an AVX2-capable CPU and the [Microsoft Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). Live comparisons require Microsoft Edge. The reviewer additionally requires the [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section); it is a separate component from Edge. To compile from source, see the [build guide](docs/build.md).
 
-To compare a different number of songs or choose another report:
+Open **`missing-report.exe`**. It starts maximized at Overview. The left sidebar keeps navigation in the same place on every screen:
+
+- **Start a new comparison:** choose your Music folder using Browse, enter Top N (default **200**), and click Start comparison. Advanced settings exposes the options in the tables below. The sidebar's **New comparison** opens the same form.
+- **Results & whitelist:** review the saved comparison and exclusions. Either file can be absent; Load buttons remain available in the empty or error state. Summary counts distinguish missing songs, uncertain matches, and whitelist entries.
+
+The Running screen separates **Chart songs**, such as `40 / 200`, from **Local tracks**, such as `640`. Local scanning runs alongside chart retrieval; its count appears as soon as scanning finishes. Unresolved files or directories are listed separately. It also shows CLI stages, elapsed time, and Cancel, without estimating a percentage. You cannot edit results or start another comparison during a run. Closing offers **Stop and close**, **Keep running**, or **Cancel**; stopping waits for cleanup, while Keep running leaves the viewer open.
+
+Successful comparisons open Results automatically, including comparisons with incomplete-scan warnings. Failure or cancellation offers **Retry** and **View previous results**. Successful GUI comparisons remember reusable options in `data/settings.toml`; **Offline** and **Clear cache** reset for every new comparison. No terminal window opens for GUI comparisons.
+
+The CLI also works independently. From the extracted folder, substitute your music directory:
 
 ```powershell
-./rym-crosscheck.exe --music-dir 'PATH/TO/MUSIC' --top 500 --output reports/missing.md
+./bin/rym-crosscheck.exe --music-dir 'PATH/TO/MUSIC'
 ```
+
+Source-build users can open `./build/release/portable/missing-report.exe`. For a CLI comparison of a different chart size:
+
+```powershell
+./bin/rym-crosscheck.exe --music-dir 'PATH/TO/MUSIC' --top 500
+```
+
+Both programs resolve the installation layout above independently of the terminal’s working directory. Explicit relative music, cache, and browser-profile CLI arguments resolve from the working directory. Your music directory is required; there is no default music path. Keep the installation in a writable directory.
 
 ## What happens during a run
 
-1. **Scan your library.** The program recursively reads MP3, FLAC, and M4A metadata, skipping directory links. Tags supply the title and artists; missing fields fall back to an `Artist - Title` filename. Unchanged files can reuse previously read tags.
-2. **Retrieve the chart.** An ordinary live run retrieves fresh ranks 1 through N. Chart and song pages are collected invisibly; you do not need to navigate pages yourself. Local scanning and chart retrieval can overlap.
-3. **Complete verification if requested.** If Cloudflare or RYM's security check challenges chart access, a dedicated, extension-free Edge window opens. Complete verification there, then press **Enter in the terminal** or close that browser window. The program reuses its cookies and resumes invisible retrieval. Verification is not solved automatically. A timeout or failed chart retrieval leaves the previous report intact.
-4. **Cross-check songs.** Exact local matches and whitelist entries are excluded. Similar local songs become review suggestions rather than confirmed ownership.
-5. **Fill in albums and write the report.** Missing album metadata is looked up where possible. Unavailable or ambiguous albums appear as `Unknown`. A successful comparison replaces the report atomically, and the terminal prints the comparison count, report location, and elapsed time.
+1. **Scan your library.** Read MP3, FLAC, and M4A tags recursively, skipping directory links. Missing artist/title tags fall back to an `Artist - Title` filename. Unchanged files can reuse cached tags.
+2. **Retrieve a fresh chart.** Collect complete ranks 1 through N. Chart and song retrieval stays invisible and can overlap local scanning.
+3. **Resolve access if requested.** A dedicated extension-free Edge window opens for Cloudflare or RYM security checks, or when RYM redirects a chart page to sign-in. RYM’s restriction form requires completing reCAPTCHA **and clicking Submit**; comments and email are optional. For sign-in, use your RYM account in Edge and choose Remember me if offered and you want the session retained. After a security check, wait until the chart appears; after sign-in, the signed-in homepage is also fine. Then **close that Edge window to continue**. Standalone terminal users can also press Enter. Credentials stay in Edge; the program reuses its persistent session and resumes invisible collection. It does not solve security checks or sign in automatically.
+4. **Compare and enrich.** Identify exact ownership and fuzzy suggestions. Whitelisted songs are excluded from current results. Album metadata is filled where possible; unavailable or ambiguous albums appear as `Unknown`.
+5. **Save and review.** Atomically replace `data/missing.json`, then show Results. Failed comparisons preserve the previous report. Standalone interactive CLI runs open the viewer with `--show-results` and exit; `--no-open` suppresses this, and ordinary noninteractive CLI runs do not open it.
 
-The dedicated browser profile retains verification cookies between runs. The program always uses this persistent browser behavior for live retrieval. See [runtime behavior and troubleshooting](docs/runtime.md) for profile management and access failures.
+Reviewing saved results needs no RYM connection and does not rescan your library. Reopening the viewer reuses its existing window. A newly published report is announced without resetting your displayed whitelist or selections; **Load latest results** first checks for whitelist differences.
 
-## CLI arguments
+A fresh browser profile does not guarantee a visible security check: RYM or Cloudflare may allow access without asking for interaction. Sign-in is requested only when RYM redirects retrieval there. See [fresh-access testing and troubleshooting](docs/runtime.md#testing-fresh-access) for using a separate empty profile without changing your retained session.
 
-Run `./rym-crosscheck.exe --help` for the command-line summary. A flag such as `--offline` takes no value. Defaults below apply when an argument is omitted.
+## Review songs and customize the whitelist
 
-### Comparison and output
+The reviewer has two sections:
 
-| Argument | Default | Meaning and accepted values |
-| --- | --- | --- |
-| `--music-dir PATH` | Required; none | Readable local music directory, scanned recursively. |
-| `--top N` | `200` | Number of chart songs to compare; a positive integer. |
-| `--output PATH` | `missing.md` | Markdown report path; must have a `.md` extension and cannot overwrite the whitelist. Parent directories are created if needed. |
-| `--whitelist PATH` | `whitelist.toml` | TOML exclusions; see [customizing the whitelist](#customizing-the-whitelist). |
-| `--offline` | Off | Use a complete chart snapshot from a previous live run instead of contacting RYM. Your current local library is still scanned. |
-| `-h`, `--help` | Off | Print help and exit; no music path is needed for help. |
+- **Current results:** all currently missing or uncertain songs not covered by the whitelist. Check **Add** for songs you want future comparisons to skip.
+- **Whitelist:** collapsed initially, showing all exclusions, including entries outside the current chart. Expand it and check **Remove** to stop excluding an entry.
 
-### Retrieval and verification
+Each section has a search box and **Select all matching / Deselect all matching** buttons. Current results also filter by Missing or Needs review. Bulk selection covers every matching page, not just the 100 displayed rows. Changing filters keeps your choices; counts show selections outside the filter.
 
-| Argument | Default | Meaning and accepted values |
-| --- | --- | --- |
-| `--browser-profile PATH` | `%LOCALAPPDATA%/rym-crosscheck/edge-profile` | Persistent dedicated Edge profile location. Use an application-specific directory, not your personal browser profile. Verification cookies are retained here. |
-| `--verification-timeout SECONDS` | `300` | Time allowed for visible verification; an integer from `1` to `3600` seconds. |
+Click **Save changes** to apply additions and removals together. Until then, checkboxes do not change the files. Saving refreshes the current report and both sections. Removed exclusions return to current results when they belong to this chart, are not exactly owned, and are not covered by another entry. Entries outside the chart become eligible in later comparisons.
 
-Browser and verification settings apply to live runs. Offline mode performs no web requests. See the [runtime guide](docs/runtime.md) for offline prerequisites and browser troubleshooting.
+Whitelisting an uncertain match means **skip this RYM song**, not a confirmed association with a local file. The exclusion remains even if that local file is later removed.
 
-### Workers and fuzzy matching
+### Saving and external edits
 
-| Argument | Default | Meaning and accepted values |
-| --- | --- | --- |
-| `--local-workers N` | Automatic, `1`–`8` | Concurrent tag-reading workers. Automatic selection uses reported hardware concurrency, capped at eight; an explicit value may be `1`–`64`. |
-| `--web-workers N` | `4` | Concurrent album lookup workers; `1`–`8`. Chart pagination remains sequential. |
-| `--request-delay-ms N` | `1000` | Minimum interval between request starts across web workers; a nonnegative integer in milliseconds. More workers do not remove this pacing. |
-| `--artist-threshold VALUE` | `0.90` | Minimum full-credit artist similarity for ordinary fuzzy suggestions. Decimal from `0` to `1`, with at most six fractional digits. |
-| `--title-threshold VALUE` | `0.85` | Minimum title similarity for fuzzy suggestions. Decimal from `0` to `1`, with at most six fractional digits. |
+The displayed whitelist, with your staged selections applied, is the proposed complete whitelist. **Save changes replaces the local TOML with exactly that set**. External entries absent from the displayed set can be removed. Saving is available even with no staged selections.
 
-Eight workers is an application cap, not a verified RYM server limit. Workers control page tasks; Edge can also request page assets. Shared pacing limits page-navigation starts, not every underlying HTTP request. For access failures or security checks, see [runtime troubleshooting](docs/runtime.md#troubleshooting).
+Before leaving Results or replacing a file, the program compares canonical exclusion entries with disk. Any difference, including external edits made without staged selections, offers **Replace local / Discard / Cancel**. Replace local writes the proposed set; Discard preserves disk and abandons the displayed editing state; Cancel stays in Results. Formatting, comments, and entry order alone do not trigger a difference. External whitelist changes are not adopted continuously.
 
-### Application cache
+### Load existing data
 
-| Argument | Default | Meaning and accepted values |
-| --- | --- | --- |
-| `--cache-dir PATH` | `.rym-crosscheck-cache` | Store reusable tags and program-generated chart snapshots here. |
-| `--clear-cache` | Off | Remove saved tag and chart records before comparison. Does not clear browser cookies. Combining it with `--offline` removes the snapshot needed for that run. |
+Use **Load report JSON** or **Load whitelist** in Results. A native picker selects a file; validation runs in the background, then a preview shows its filename and song or exclusion count. Choose Replace or Cancel. Outstanding whitelist differences are resolved before replacement.
 
-Cache limits, retention, and cleanup are covered in the [runtime guide](docs/runtime.md).
+JSON loading replaces only `data/missing.json`; an embedded whitelist snapshot never replaces active TOML. TOML loading replaces only `data/whitelist.toml`, then refreshes the report snapshot and both sections. Sources are copied after validation and remain untouched. Selecting the active file is a no-op. Invalid input, cancellation, or failed destination writes preserve existing data. Imports accept program-generated report JSON and the whitelist syntax below; they do not create offline chart caches.
 
-## Customizing the whitelist
+If the active whitelist is unreadable, exclusion checkboxes, bulk-selection controls, and Save are disabled. Results remain readable and you can leave the screen or load a valid whitelist; the unreadable file is not treated as an empty set to save.
 
-A whitelist suppresses songs you do not want reported, even when no exact local match exists. Start from the supplied example, then edit the copy:
+### Existing and manually edited whitelists
 
-```powershell
-Copy-Item whitelist.example.toml whitelist.toml
-```
+There is **no automatic migration**. Existing `report/` files and whitelists beside older executables remain untouched. Load them explicitly through Results. A comparison initializes an empty `data/whitelist.toml` when the active file is absent.
 
-Remove or replace its sample entries. Use one `[[songs]]` table per song, choosing one of these forms:
+You can still edit the active TOML yourself. Supported forms are:
 
 ```toml
-# Exclude one song by its RYM song-page URL.
 [[songs]]
 url = "https://rateyourmusic.com/song/radiohead/paranoid-android/"
 
-# Exclude a title credited to one artist.
 [[songs]]
 title = "Example song"
 artist = "Example artist"
 
-# Exclude a title with multiple credited artists.
 [[songs]]
 title = "Example collaboration"
 artists = ["Principal artist", "Guest artist"]
 ```
 
-URL entries contain only `url`, pointing to an HTTPS RYM song page. Artist/title entries require `title` and either `artist` or `artists`, not both. List every credited artist separately when using `artists`; order does not matter. A name containing a comma or `&` remains one artist name. Artist/title entries use the same normalization and recording-version distinctions as exact matching.
+URL entries contain only `url`, an HTTPS RYM song-page URL. Artist/title entries require `title` and either `artist` or `artists`. List all credited artists; their order does not matter. Commas and `&` inside a name do not split it into multiple artists. Unknown keys, malformed TOML, or invalid entries produce an error.
 
-To use another whitelist:
+The reviewer adds songs by URL and preserves artist/title entries in the displayed set. Saving normalizes TOML and deduplicates equivalent entries; **manual comments and formatting are not retained**. An unreadable whitelist must be repaired or explicitly replaced; ordinary Save does not overwrite it. Saving refreshes the latest report generation. If report refresh fails after the whitelist commit, a partial-success warning explains that the exclusions were saved; they are not rolled back.
 
-```powershell
-./rym-crosscheck.exe --music-dir 'PATH/TO/MUSIC' --whitelist 'PATH/TO/WHITELIST.toml'
-```
+Keep personal data out of Git. The generated `data/` directory and legacy personal file locations are ignored; `whitelist.example.toml` documents the supported syntax.
 
-An absent default `whitelist.toml` means no exclusions. An explicitly supplied missing file, invalid TOML, unknown keys, or invalid entry types produces an error. The default personal whitelist is Git-ignored; `whitelist.example.toml` is part of the project. A custom whitelist elsewhere needs its own ignore rule if stored in the repository.
+## Understanding results
 
-## Understanding matches and the report
+Exact ownership requires matching title, complete credited artists, and a compatible recording version. Normalization ignores case, Unicode representation, extra whitespace, typographic quotes/dashes, and explicit remaster suffixes. For example, `Title (2020 Remaster)` can match `Title`. Accents and meaningful punctuation remain significant. `Title (Live)` is distinct from `Title`; the word in `Live Forever` is not a recording label. Structured artist credit order can differ.
 
-Exact ownership requires a matching title, complete credited artists, and a compatible recording version. Matching ignores case, Unicode representation, extra whitespace, typographic quotes/dashes, and explicit remaster suffixes. For example, `Title (2020 Remaster)` can match `Title`. Accents and meaningful punctuation remain significant. `Title (Live)` is distinct from `Title`; the ordinary word in `Live Forever` is not a recording label. Structured artist lists can match regardless of credit order.
+Fuzzy suggestions require **90% artist and 85% title similarity by default**, plus compatible versions. **Credit mismatch** suggestions can appear when the principal artist matches exactly and the title passes its threshold, while full credits differ. Scores measure text similarity, not ownership probability. Album names never determine ownership.
 
-Fuzzy matching compares normalized artist and title strings. Ordinary suggestions must meet both thresholds—**90% artist and 85% title by default**—and have compatible versions. Scores measure text similarity, not the probability that you own a song. Lower thresholds admit more suggestions; review them before changing your whitelist.
+| Display | Meaning |
+| --- | --- |
+| Missing | No local suggestion qualifies. |
+| Needs review | Up to three distinct local suggestions, with scores and paths relative to your music directory. Duplicate editions share a suggestion slot. |
+| Unknown album | Associated album metadata was unavailable or ambiguous; reporting still completes. |
+| Local scan incomplete | Review the prominent warning and affected-file list. Reported songs may exist among unresolved files. |
+| Offline snapshot | Source, capture time, and snapshot age are shown. |
 
-A separate **Credit mismatch** suggestion can appear when the principal artist matches exactly and the title meets its threshold, but the full artist lists differ. This can appear below the ordinary artist threshold. Album names never determine ownership.
+The JSON stores comparison data so removing an exclusion can restore its row without another scan. Owned songs remain out of current results. The whitelist view uses known chart metadata or falls back to its stored URL or artist/title.
 
-The report lists songs in chart-rank order, with song titles linked to their RYM pages. This synthetic example illustrates the columns:
+## CLI arguments
 
-| Song | Artist | Album | Status | Possible local matches |
-| --- | --- | --- | --- | --- |
-| [Example song](https://rateyourmusic.com/song/example-artist/example-song/) | Example artist | Example album | Missing | |
-| [Example variant](https://rateyourmusic.com/song/example-artist/example-variant/) | Example artist | Example album | Needs review | Example artist/Example varient.flac — artist 100.0%, title 93.3% |
-| [Example collaboration](https://rateyourmusic.com/song/example-artist/example-collaboration/) | Example artist, Guest artist | Unknown | Needs review | Example artist/Example collaboration.mp3 — Credit mismatch; title 100.0% |
+Run `./bin/rym-crosscheck.exe --help` for a summary. Flags take no value. `--output`, `--whitelist`, `--web-mode`, `--private-browser`, and `--persistent-browser` are not supported. Report and whitelist locations are fixed; Markdown output is no longer generated. Advanced GUI fields use the same defaults and ranges.
 
-- **Missing:** no qualifying local suggestion was found.
-- **Needs review:** up to three distinct local suggestions are shown with scores or a credit-mismatch reason and paths relative to the music directory. Duplicate editions occupy one suggestion slot.
-- **Unknown album:** associated album metadata was unavailable or ambiguous; the comparison still completes.
-- **Local scan incomplete:** a prominent warning and affected-file list indicate files or directories that could not be identified. Some reported songs might exist among those files.
+### Comparison and display
 
-Owned and whitelisted songs do not appear as rows. If nothing remains, the report says all compared songs are owned or whitelisted. Offline reports also show the snapshot source and age.
+| Argument | Default | Meaning and accepted values |
+| --- | --- | --- |
+| `--music-dir PATH` | Required | Readable music directory, scanned recursively. |
+| `--top N` | `200` | Integer chart size `1`–`2147483647`. |
+| `--offline` | Off | Use a complete snapshot from an earlier live run; still scan the current library. |
+| `--no-open` | Off | Save the report without automatically opening the reviewer. |
+| `-h`, `--help` | Off | Print help and exit without requiring a music path. |
+
+### Retrieval and workers
+
+| Argument | Default | Meaning and accepted values |
+| --- | --- | --- |
+| `--browser-profile PATH` | `%LOCALAPPDATA%/rym-crosscheck/edge-profile` | Dedicated persistent Edge profile for verification and sign-in cookies; do not use a personal profile. |
+| `--verification-timeout SECONDS` | `300` | Integer `1`–`3600`, in seconds; bounds security verification and manual sign-in. |
+| `--local-workers N` | Hardware concurrency, capped at `8` | Concurrent tag readers; explicit integer `1`–`64`. |
+| `--web-workers N` | `4` | Album lookup workers; integer `1`–`8`. Chart pagination is sequential. |
+| `--request-delay-ms N` | `1000` | Nonnegative minimum interval between page-navigation starts, in milliseconds, shared across workers. |
+
+Eight workers is an application cap, not a verified RYM server limit. Browser asset requests are separate from page-navigation pacing. See [runtime troubleshooting](docs/runtime.md#troubleshooting) for access restrictions.
+
+### Matching and cache
+
+| Argument | Default | Meaning and accepted values |
+| --- | --- | --- |
+| `--artist-threshold VALUE` | `0.90` | Minimum ordinary artist similarity; decimal `0`–`1`, up to six fractional digits. |
+| `--title-threshold VALUE` | `0.85` | Minimum title similarity; decimal `0`–`1`, up to six fractional digits. |
+| `--cache-dir PATH` | Installation’s `data/cache` | Local tag records and program-generated chart snapshots. |
+| `--clear-cache` | Off | Clear application cache records before comparison. Does not clear verification cookies. With `--offline`, it removes the required snapshot. |
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Comparison completed, including any missing or review rows. |
+| `0` | Comparison completed, including missing/review results. |
 | `1` | Fatal error or cancellation. |
-| `2` | Report written with an incomplete local scan. |
+| `2` | Report saved with an incomplete local scan. |
+
+A reviewer launch failure does not change a completed comparison’s exit code. Only one comparison can run per installation, including direct CLI runs. Preserve `data/` when upgrading and close both programs before replacing executables. See the release guide for safe updates.
 
 ## Further documentation
 
-- [Build guide](docs/build.md): prerequisites, Release/Debug, parallel builds, and disabling test builds.
-- [Release guide](docs/releases.md): automatic GitHub releases, versioning, and manual packaging.
-- [Runtime guide](docs/runtime.md): offline snapshots, caches, browser profiles, cleanup, and troubleshooting.
-- [Testing guide](docs/testing.md): CTest coverage and the optional live UI regression check.
-- [Architecture](docs/architecture.md): matching algorithms, subsystem boundaries, and resource ownership.
+- [Build guide](docs/build.md): prerequisites, Release/Debug, parallel builds, and disabling tests.
+- [Release guide](docs/releases.md): GitHub releases, packaging, and portable upgrades.
+- [Runtime guide](docs/runtime.md): snapshots, caches, profiles, cleanup, and troubleshooting.
+- [Testing guide](docs/testing.md): core correctness tests and native UI checks.
+- [Architecture](docs/architecture.md): matching, report storage, concurrency, and ownership.

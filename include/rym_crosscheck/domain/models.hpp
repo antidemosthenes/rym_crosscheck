@@ -24,9 +24,6 @@ struct Track {
 struct Fraction {
     std::uint32_t numerator{1};
     std::uint32_t denominator{1};
-    double value() const noexcept {
-        return static_cast<double>(numerator) / denominator;
-    }
 };
 struct Candidate {
     std::size_t track_id{};

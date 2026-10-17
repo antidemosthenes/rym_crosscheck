@@ -80,9 +80,10 @@ function New-ReleasePackage {
     $commit = (Invoke-ReleaseGit @('rev-parse', '--verify', 'HEAD') | Select-Object -First 1).Trim()
     $tag = Get-ReleaseTag -Tags @(Invoke-ReleaseGit @('tag', '--list')) `
       -CommitTags @(Invoke-ReleaseGit @('tag', '--points-at', 'HEAD'))
-    $binary = Join-Path $root 'build/release/bin/rym-crosscheck.exe'
+    $binary = Join-Path $root 'build/release/portable/bin/rym-crosscheck.exe'
+    $viewer = Join-Path $root 'build/release/portable/missing-report.exe'
     $cache = Join-Path $root 'build/release/CMakeCache.txt'
-    if (-not (Test-Path -LiteralPath $binary) -or -not (Test-Path -LiteralPath $cache)) {
+    if (-not (Test-Path -LiteralPath $binary) -or -not (Test-Path -LiteralPath $viewer) -or -not (Test-Path -LiteralPath $cache)) {
       throw 'Build the release preset before packaging.'
     }
     if (-not (Select-String -LiteralPath $cache -Pattern '^CMAKE_BUILD_TYPE:STRING=Release$' -Quiet)) {
@@ -102,7 +103,11 @@ function New-ReleasePackage {
       $name = "rym-crosscheck-$tag-windows-x64"
       $package = Join-Path $staging $name
       New-Item -ItemType Directory -Path $package | Out-Null
-      Copy-Item -LiteralPath $binary -Destination $package
+      $binaryFolder = Join-Path $package 'bin'
+      New-Item -ItemType Directory -Path $binaryFolder | Out-Null
+      New-Item -ItemType Directory -Path (Join-Path $package 'data') | Out-Null
+      Copy-Item -LiteralPath $binary -Destination $binaryFolder
+      Copy-Item -LiteralPath $viewer -Destination $package
       foreach ($file in @('README.md', 'LICENSE', 'whitelist.example.toml', 'docs')) {
         Copy-Item -LiteralPath (Join-Path $root $file) -Destination $package -Recurse
       }
@@ -117,6 +122,7 @@ function New-ReleasePackage {
         taglib = 'taglib_project-prefix/src/taglib_project'
         utf8cpp = 'utf8cpp_project-prefix/src/utf8cpp_project'
         zlib = 'zlib_project-prefix/src/zlib_project'
+        webview2 = '_deps/webview2-src'
       }
       foreach ($dependency in $sources.Keys) {
         $source = Join-Path $root (Join-Path 'build/release' $sources[$dependency])

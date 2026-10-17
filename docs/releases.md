@@ -4,9 +4,11 @@
 
 The [release workflow](https://github.com/antidemosthenes/rym_crosscheck/blob/main/.github/workflows/release.yml) runs on pushes to `main`. Each push publishes the executable built from that push's final commit; pushing several commits together produces one release. You can also select **Actions → Windows x64 release → Run workflow** on `main` to retry a failed run.
 
-The workflow uses a Windows runner with Visual Studio 2026, CMake, Ninja, GitHub CLI, and 7-Zip. It configures the **Release preset** with `RYM_BUILD_TESTS=OFF`, builds the CLI, and packages `build/release/bin/rym-crosscheck.exe`. It neither compiles nor runs project tests. Ordinary local build defaults are unchanged; see the [build guide](build.md) and [testing guide](testing.md).
+The workflow uses a Windows runner with Visual Studio 2026, CMake, Ninja, GitHub CLI, and 7-Zip. It configures the **Release preset** with `RYM_BUILD_TESTS=OFF`, builds both programs, and packages `build/release/portable/missing-report.exe` at the archive root with `build/release/portable/bin/rym-crosscheck.exe` under `bin/` and an empty `data/` directory. It neither compiles nor runs project tests. Ordinary local defaults are unchanged; see the [build guide](build.md) and [testing guide](testing.md).
 
-Pinned, hash-verified dependency archives are cached between runs. Compiled objects, application caches, and browser profiles are not cached. The first run takes longer because it downloads and compiles all dependencies; subsequent runs reuse downloads but still compile from source.
+Pinned, hash-verified dependency archives for all nine dependencies are cached between runs. Archive names include their hashes; compatible archives can be restored even when other dependency versions change. Only missing archives are downloaded. Compiled objects, application caches, and browser profiles are not cached. The first run takes longer because it downloads and compiles all dependencies; subsequent runs reuse downloads but still extract and compile from source on the fresh runner.
+
+The helper's fresh configuration clears `build/` except `build/downloads/`, so restored archives survive cleanup. The following `build` action reuses that configuration and keeps tests disabled. Local use of the same configuration command also removes old portable runtime data and release archives; preserve any wanted data outside `build/` first.
 
 The workflow's `GITHUB_TOKEN` requests `contents: write` to create tags, upload assets, and publish releases. No personal access token is needed. Repository or organization policies and tag rules must permit these operations. If they deny publication, the run fails with the GitHub error; local packaging remains available.
 
@@ -28,9 +30,9 @@ rym-crosscheck-v1.0.0-windows-x64.7z
 rym-crosscheck-v1.0.0-windows-x64.7z.sha256
 ```
 
-The archive contains one folder with the optimized Release executable, README, documentation, `whitelist.example.toml`, project license, third-party license notices, and `version.txt` recording the tag and commit. It includes no test executables, debug build, personal whitelist, reports, music, browser data, or application cache.
+The archive contains one folder with the optimized Release launcher and CLI, README, documentation, `whitelist.example.toml`, project license, SDK and other third-party notices, and `version.txt` recording the tag and commit. It includes no test executables, debug build, personal whitelist, reports, settings, music, browser data, or runtime cache. Packaging copies an explicit allowlist of files, never the contents of a local build’s `data/` directory.
 
-The executable requires Windows x64, an AVX2-capable CPU, and the [Microsoft Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). Microsoft Edge is needed for live comparisons. Extract the archive before following the [README](../README.md).
+The executable requires Windows x64, an AVX2-capable CPU, and the [Microsoft Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). Microsoft Edge is needed for live comparisons. The reviewer separately requires the [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section); the static loader is included in the executable, but the runtime is not bundled or installed automatically. Extract the archive before following the [README](../README.md).
 
 To verify a downloaded archive, compare this output with the accompanying `.sha256` file:
 
@@ -48,7 +50,7 @@ From the repository root, build without tests and package locally:
 ./scripts/release.ps1
 ```
 
-Install 7-Zip or put `7z.exe` on PATH. Local packaging does not require GitHub CLI, credentials, or a network connection once dependencies are built. It creates the `.7z`, checksum, and `release-notes.txt` under Git-ignored `build/releases/`. Staging files are removed even on controlled failure. Only the Release preset's executable is packaged, regardless of whether Debug or test binaries also exist.
+Install 7-Zip or put `7z.exe` on PATH. Local packaging does not require GitHub CLI, credentials, or a network connection once dependencies are built. It creates the `.7z`, checksum, and `release-notes.txt` under Git-ignored `build/releases/`. Staging files are removed even on controlled failure. Only the Release preset's two application executables are packaged, regardless of whether Debug or test binaries also exist.
 
 Before packaging manually, update your tags and build the intended source revision. Local packaging includes working-tree changes in the executable and documents; `version.txt` and notes identify `HEAD`. Use a clean checkout for a reproducible published release. The workflow always uses a fresh checkout of the triggering commit.
 
@@ -76,5 +78,12 @@ Release archives preserve upstream license and notice files in `third-party-lice
 | Lexbor | 3.0.0 | [Source](https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz) |
 | CLI11 | 2.7.2 | [Source](https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.7.2.tar.gz) |
 | toml++ | 3.4.0 | [Source](https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz) |
+| WebView2 SDK | 1.0.4258.31 | [SDK package](https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg) |
 
 TagLib is distributed under its MPL option; its source is available through the link above. Both upstream license texts are retained for reference. The application license is in [LICENSE](../LICENSE).
+
+## Portable upgrades
+
+Close the launcher and CLI before upgrading. Replace root `missing-report.exe` and `bin/rym-crosscheck.exe` while retaining `data/`, including report, whitelist, settings, and cache. Release archives contain none of those personal files. If extracting into a new installation, use Results’ Load report JSON and Load whitelist to copy validated old files; source files remain untouched. Remembered settings and runtime caches are separate from those imports.
+
+There is no automatic migration from the former `report/` layout or root whitelist. Load those files explicitly; they are never moved. The old CLI `--output` and `--whitelist` arguments remain removed. Markdown reports are not imported; run a comparison to generate program JSON. Do not publish personal reports, whitelist files, or settings as release assets.

@@ -178,7 +178,12 @@ std::string song_url(std::string_view value) {
     return url;
 }
 bool challenged(std::string_view html) noexcept {
-    return html.find("cf-chl-") != html.npos || html.find("_cf_chl_opt") != html.npos ||
+    const bool rym_restriction = html.find("recaptcha") != html.npos &&
+                                 (html.find("some requests from your computer") != html.npos ||
+                                  html.find("loading pages too quickly") != html.npos ||
+                                  html.find("RYM/Sonemic Staff") != html.npos);
+    return rym_restriction || html.find("cf-chl-") != html.npos ||
+           html.find("_cf_chl_opt") != html.npos ||
            html.find("<title>Security check required</title>") != html.npos ||
            html.find("<title>Just a moment") != html.npos ||
            html.find("<title>Attention Required") != html.npos;

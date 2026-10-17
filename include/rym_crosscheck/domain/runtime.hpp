@@ -45,6 +45,12 @@ class Handle {
         return value_ && value_ != INVALID_HANDLE_VALUE;
     }
 };
+struct QuietProcess {
+    Handle process, thread;
+};
+// Launch suspended with isolated streams so the caller can assign job ownership before execution.
+[[nodiscard]] QuietProcess create_quiet_process(const std::filesystem::path &executable,
+                                               std::wstring command);
 class FileLock {
     Handle handle_;
 

@@ -6,6 +6,30 @@ param(
 $ErrorActionPreference = 'Stop'
 if ($BuildTests -and $Action -notin @('configure','all')) { throw '-BuildTests applies to configure or all.' }
 if ($BuildTests -eq 'OFF' -and $Action -eq 'all') { throw 'Use configure -BuildTests OFF, then build; all also runs CTest.' }
+function Clear-BuildOutputs([string]$ProjectRoot) {
+  $projectPath = (Resolve-Path -LiteralPath $ProjectRoot).Path
+  $buildPath = [IO.Path]::GetFullPath((Join-Path $projectPath 'build'))
+  if (-not (Test-Path -LiteralPath $buildPath)) { return }
+  $buildDirectory = Get-Item -LiteralPath $buildPath -Force
+  if (-not $buildDirectory.PSIsContainer -or
+      ($buildDirectory.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'Build cleanup requires a real build directory, not a file or directory link.'
+  }
+  Write-Host 'Removing build outputs; preserving build/downloads.'
+  foreach ($item in Get-ChildItem -LiteralPath $buildPath -Force) {
+    if ($item.PSIsContainer -and $item.Name -ieq 'downloads') { continue }
+    $targetPath = [IO.Path]::GetFullPath($item.FullName)
+    if (-not [string]::Equals([IO.Path]::GetDirectoryName($targetPath), $buildPath,
+                              [StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to remove a path outside the build directory: $targetPath"
+    }
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      Remove-Item -LiteralPath $targetPath -Force
+    } else {
+      Remove-Item -LiteralPath $targetPath -Recurse -Force
+    }
+  }
+}
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
 if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio Installer with vswhere is required.' }
 $buildTools = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -31,6 +55,7 @@ $ninja = Find-BuildTool 'ninja.exe' 'Common7\IDE\CommonExtensions\Microsoft\CMak
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
   if ($Action -in @('configure','all')) {
+    Clear-BuildOutputs (Get-Location).Path
     $configureArguments = @('--preset', $Preset, "-DCMAKE_MAKE_PROGRAM=$ninja")
     if ($BuildTests) { $configureArguments += "-DRYM_BUILD_TESTS=$BuildTests" }
     & $cmake @configureArguments
