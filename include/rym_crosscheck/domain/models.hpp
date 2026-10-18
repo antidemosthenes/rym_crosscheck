@@ -31,6 +31,11 @@ struct Candidate {
     Fraction title;
     bool credit_gap{};
     bool version_gap{};
+    bool artist_gap{};
+    bool section_gap{};
+    bool compound_gap{};
+    bool annotation_gap{};
+    bool diacritic_gap{};
 };
 struct Missing {
     Song song;

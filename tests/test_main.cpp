@@ -74,7 +74,12 @@ void equal_candidates(const auto &left, const auto &right) {
     for (std::size_t i = 0; i < left.size(); ++i) {
         require(left[i].track_id == right[i].track_id &&
                     left[i].credit_gap == right[i].credit_gap &&
-                    left[i].version_gap == right[i].version_gap,
+                    left[i].version_gap == right[i].version_gap &&
+                    left[i].artist_gap == right[i].artist_gap &&
+                    left[i].section_gap == right[i].section_gap &&
+                    left[i].compound_gap == right[i].compound_gap &&
+                    left[i].annotation_gap == right[i].annotation_gap &&
+                    left[i].diacritic_gap == right[i].diacritic_gap,
                 "Indexed ranking differs");
         require(left[i].artist.numerator == right[i].artist.numerator &&
                     left[i].artist.denominator == right[i].artist.denominator &&
@@ -90,6 +95,12 @@ void normalization() {
     require(rym::normalize("Title (2022 Remaster)", true).text == "title", "Remaster suffix");
     require(rym::normalize("Title (Live)", true).text != "title", "Preserve live qualifier");
     require(rym::identity("Live Forever", {"Band"}).version.empty(), "Title word is not version");
+    for (auto title : {"Song (Lively Interlude)", "Song (Demolition)", "Song (Editorial)",
+                       "Song (Liveé)", "Song (Live_Archive)", "Song (Club Mixé)"})
+        require(rym::identity(title, {"Band"}).version.empty(),
+                "Recording qualifiers must match complete words");
+    require(!rym::identity("Song (Live at the Theatre)", {"Band"}).version.empty(),
+            "Explicit recording labels retain their protection");
     require(rym::normalize("  “Heroes”  ", true).text == "heroes", "Title quotation marks");
     require(rym::normalize("\"Heroes\" (2017 Remaster)", true).text == "heroes",
             "Formatting and remaster normalization compose");
@@ -97,7 +108,20 @@ void normalization() {
                 rym::normalize("Weird Fishes/ Arpeggi", true).text == "weird fishes/arpeggi",
             "Title slash spacing is insignificant");
     require(rym::normalize("Title (Including ‘Section’)", true).text == "title",
-            "Quoted included-section annotation is optional");
+            "Included-section annotations yield a base title for scoring");
+    for (auto title : {"Title (Including 'First' and 'Second')",
+                       "Title [Including ‘First’, ‘Second’, and ‘Third’]",
+                       "Title (Including \"First\" & 'Second')",
+                       "Title (Including 'The Devil's Song' and 'Finale')"})
+        require(rym::normalize(title, true).text == "title",
+                "Quoted included sections support lists and internal apostrophes");
+    for (auto title :
+         {"Title (Including 'First' and Second)", "Title (Including 'First' and 'Second)",
+          "Title (Including 'First',)", "Title (Including '' and 'Second')",
+          "Title (Including 'First' live)", "Title (Including 'First' 'Second')"}) {
+        require(rym::normalize(title, true).text == rym::normalize(title).text,
+                "Malformed or unquoted included-section lists remain significant");
+    }
     require(rym::normalize("Title (Part II)", true).text == "title (part ii)" &&
                 rym::normalize("Title (Including Live Intro)", true).text ==
                     "title (including live intro)" &&
@@ -108,42 +132,117 @@ void normalization() {
     require(rym::threshold("0.900000").numerator == 9, "Rational threshold");
     throws([] { rym::threshold("1.01"); });
     throws([] { rym::normalize(std::string(1, static_cast<char>(0xff))); });
+    for (auto value : {"", "Café", "Cafe\xCC\x81", "Ｓｏｎｇ［未知］", "Song 🎵/Finale"}) {
+        auto name = rym::normalize(value);
+        require(rym::decode_utf8(name.text) == name.points,
+                "Prepared UTF-8 decoding preserves normalized Unicode code points");
+    }
+    throws([] { rym::decode_utf8(std::string(1, static_cast<char>(0xc3))); });
     require(rym::edit_distance(U"kitten", U"sitting", 3) == 3, "Levenshtein reference");
     require(rym::edit_distance(U"kitten", U"sitting", 2) > 2, "Cutoff reference");
     require(rym::passes(rym::similarity(U"abcdefghij", U"abcdxfghij", {9, 10}), {9, 10}),
             "Inclusive boundary");
 }
+void matching_pipeline() {
+    const std::vector<std::string> titles{"Heroes",
+                                          "\"Heroes\"",
+                                          "Café (Unlisted [Reference])",
+                                          "Weird Fishes / Arpeggi",
+                                          "Song (Including 'First' and 'Second')",
+                                          "Song (Live) [Extended Version]",
+                                          "Song [Radio Edit] (2015 Remaster)",
+                                          "Song - Album Version",
+                                          "Song (Bad]",
+                                          "Song [Unknown] (Part II)",
+                                          "Don't Stop!",
+                                          "\"Love\" and \"Hate\""};
+    const std::vector<std::vector<std::string>> credits{
+        {"Artist"}, {"Artist", "Guest"}, {"Guest", "Artist"}, {"Café", "Cafe\xCC\x81"}};
+    for (const auto &title : titles)
+        for (const auto &artists : credits) {
+            auto prepared = rym::identity(title, artists);
+            require(rym::identity_key(title, artists) == prepared.key,
+                    "Exact-only and review preparation must construct the same identity key");
+            std::vector<rym::Track> tracks{track(title, artists)};
+            rym::Index index(tracks);
+            auto query = song(title, artists);
+            require(index.owns(query) && index.owns(prepared),
+                    "Standalone and prepared exact lookup have identical semantics");
+            equal_candidates(index.suggest(query, {9, 10}, {85, 100}),
+                             index.suggest(prepared, {9, 10}, {85, 100}));
+            equal_candidates(index.suggest(prepared, {9, 10}, {85, 100}),
+                             index.suggest(prepared, {9, 10}, {85, 100}, true));
+        }
+    for (const auto &title : titles) {
+        throws([&] { rym::identity_key(title, {}); });
+        throws([&] { rym::identity_key(title, {std::string(1, static_cast<char>(0xff))}); });
+    }
+    throws([] { rym::identity_key("", {"Band"}); });
+    std::vector<std::string> oversized{std::string(40000, 'a'), std::string(40000, 'b')};
+    throws([&] { rym::identity("Song", oversized); });
+    throws([&] { rym::identity_key("Song", oversized); });
+    std::vector<rym::Track> annotated{track("[Intro] \"Heroes\"", {"David Bowie"})};
+    auto query = song("Heroes", {"David Bowie"});
+    auto candidates = rym::Index(annotated).suggest(query, {9, 10}, {85, 100});
+    require(candidates.size() == 1 && candidates[0].annotation_gap,
+            "Quote normalization preserves words revealed by annotation removal");
+    std::string artist(60000, 'a'), title(60000, 't');
+    auto near_artist = artist, farther_artist = artist, near_title = title;
+    near_artist[30000] = 'b';
+    farther_artist[30000] = farther_artist[30001] = 'b';
+    near_title[30000] = 'u';
+    std::vector<rym::Track> long_tracks{track(title, {near_artist}, "second.flac"),
+                                        track(near_title, {artist}, "first.flac"),
+                                        track(near_title, {near_artist}, "third.flac"),
+                                        track(title, {farther_artist}, "fourth.flac")};
+    rym::Index long_index(long_tracks);
+    auto long_query = song(title, {artist});
+    auto ranked = long_index.suggest(long_query, {9, 10}, {85, 100});
+    require(ranked.size() == 3 && ranked[0].track_id == 1 && ranked[1].track_id == 0 &&
+                ranked[2].track_id == 2,
+            "Ranking remains exact when mean-score cross products exceed 64 bits");
+    equal_candidates(ranked, long_index.suggest(long_query, {9, 10}, {85, 100}, true));
+}
 void matching_examples() {
     struct Example {
         std::string artist, rym_title, local_title, rym_album, local_album;
+        bool version_gap{}, section_gap{};
     };
     const std::vector<Example> examples{
         {"David Bowie", "\"Heroes\"", "Heroes", "\"Heroes\"", "Heroes"},
         {"King Crimson", "21st Century Schizoid Man (Including 'Mirrors')",
          "21st Century Schizoid Man", "In the Court of the Crimson King",
-         "In the Court of the Crimson King"},
+         "In the Court of the Crimson King", false, true},
         {"Radiohead", "Weird Fishes / Arpeggi", "Weird Fishes/ Arpeggi", "In Rainbows",
          "In Rainbows"},
         {"Depeche Mode", "Enjoy the Silence", "Enjoy The Silence [Single Version]", "Violator",
-         "The Singles 86 - 98 (Disc 1)"}};
-    for (std::size_t i = 0; i < examples.size(); ++i) {
-        const auto &example = examples[i];
+         "The Singles 86 - 98 (Disc 1)", true},
+        {"Curtis Mayfield", "Move On Up", "Move on Up (Extended Version)", "Curtis", "Curtis",
+         true},
+        {"King Crimson",
+         "The Court of the Crimson King (Including 'The Return of the Fire Witch' and 'The Dance "
+         "of the Puppets')",
+         "The Court Of the Crimson King", "In the Court of the Crimson King",
+         "In the Court of the Crimson King", false, true}};
+    for (const auto &example : examples) {
         std::vector<rym::Track> tracks{track(example.local_title, {example.artist})};
         tracks[0].album = example.local_album;
         auto query = song(example.rym_title, {example.artist});
         query.album = example.rym_album;
         rym::Index index(tracks);
-        require(index.owns(query) == (i != 3), "Requested title-format ownership examples");
+        auto owned = !example.version_gap && !example.section_gap;
+        require(index.owns(query) == owned, "Requested title-format ownership examples");
         auto candidates = index.suggest(query, {9, 10}, {85, 100});
-        require(candidates.size() == 1 && candidates[0].version_gap == (i == 3) &&
+        require(candidates.size() == 1 && candidates[0].version_gap == example.version_gap &&
+                    candidates[0].section_gap == example.section_gap &&
                     candidates[0].title.numerator == candidates[0].title.denominator,
                 "Normalized title scores and explicit version review");
         equal_candidates(candidates, index.suggest(query, {9, 10}, {85, 100}, true));
         std::vector<rym::Track> reverse{track(example.rym_title, {example.artist})};
-        require(rym::Index(reverse).owns(song(example.local_title, {example.artist})) == (i != 3),
+        require(rym::Index(reverse).owns(song(example.local_title, {example.artist})) == owned,
                 "The same title normalization applies to both sources");
         std::swap(query.album, tracks[0].album);
-        require(index.owns(query) == (i != 3), "Albums do not affect ownership");
+        require(index.owns(query) == owned, "Albums do not affect ownership");
     }
     std::vector<rym::Track> variants{
         track("Enjoy the Silence [Single Version]", {"Depeche Mode"}, "single.flac"),
@@ -155,9 +254,12 @@ void matching_examples() {
             "Recording versions remain distinct editions");
     auto query = song("Enjoy the Silence", {"Depeche Mode"});
     auto candidates = index.suggest(query, {9, 10}, {85, 100});
-    require(!index.owns(query) && candidates.size() == 2 && candidates[0].version_gap &&
+    require(!index.owns(query) && candidates.size() == 3 && candidates[0].version_gap &&
                 candidates[1].version_gap,
-            "Only single/album variants can suggest an unqualified recording");
+            "Edition suggestions precede segmented recording reviews");
+    require(!candidates[0].annotation_gap && !candidates[1].annotation_gap &&
+                candidates[2].annotation_gap,
+            "General annotation review remains distinct from the existing edition path");
     for (const auto &title : {"Enjoy the Silence", "Enjoy the Silence [Single Version]",
                               "Enjoy the Silence (Album Version)", "Enjoy the Silence (Live)"})
         for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{85, 100}, rym::Fraction{1, 1}}) {
@@ -173,14 +275,16 @@ void matching_examples() {
             "Same-version suggestions precede edition differences");
     std::vector<rym::Track> protected_versions{
         track("Enjoy the Silence (Live) [Single Version]", {"Depeche Mode"})};
-    require(rym::Index(protected_versions).suggest(query, {9, 10}, {85, 100}).empty(),
-            "Edition labels cannot hide a protected recording qualifier");
+    auto protected_review = rym::Index(protected_versions).suggest(query, {9, 10}, {85, 100});
+    require(protected_review.size() == 1 && protected_review[0].annotation_gap &&
+                protected_review[0].version_gap,
+            "Segmentation exposes recording differences for review without asserting ownership");
     rym::Scan scan;
     scan.tracks = variants;
     auto report =
         rym::compare_library({{query}, rym::now_seconds()}, scan, ".", true, {9, 10}, {85, 100});
     auto restored = rym::parse_report(rym::report_json(report));
-    require(!restored.songs[0].owned && restored.songs[0].candidates.size() == 2 &&
+    require(!restored.songs[0].owned && restored.songs[0].candidates.size() == 3 &&
                 restored.songs[0].candidates[0].version_gap,
             "Version review survives report generation and JSON round trips");
     auto exclusion = rym::Whitelist::parse("songs=[{title='Heroes',artist='David Bowie'}]");
@@ -189,6 +293,306 @@ void matching_examples() {
     auto single = rym::Whitelist::parse(
         "songs=[{title='Enjoy the Silence [Single Version]',artist='Depeche Mode'}]");
     require(!single.contains(query), "Version-specific whitelist does not exclude other versions");
+}
+void edition_review() {
+    const std::vector<std::string> editions{"Single Version",
+                                            "Album Version",
+                                            "Extended Version",
+                                            "Extended Mix",
+                                            "Extended",
+                                            "Radio Edit",
+                                            "Radio Version",
+                                            "Radio Mix",
+                                            "Single Edit",
+                                            "Single Mix",
+                                            "Album Edit",
+                                            "Album Mix",
+                                            "Edit",
+                                            "Edited Version",
+                                            "Extended Edit",
+                                            "Short Version",
+                                            "Short Edit",
+                                            "Long Version",
+                                            "Long Edit",
+                                            "Full Length Version",
+                                            "Full-Length Version",
+                                            "Full Length",
+                                            "Full-Length",
+                                            "Original Version",
+                                            "Original Mix",
+                                            "12\" Version",
+                                            "12-Inch Version",
+                                            "7\" Version",
+                                            "7-Inch Version",
+                                            "12\" Mix",
+                                            "7\" Mix",
+                                            "Mono Version",
+                                            "Stereo Version",
+                                            "Mono",
+                                            "Stereo"};
+    for (const auto &edition : editions) {
+        auto qualified = "Move on Up (" + edition + ")";
+        std::vector<rym::Track> local{track(qualified, {"Curtis Mayfield"})};
+        auto plain = song("Move On Up", {"Curtis Mayfield"});
+        rym::Index index(local);
+        require(!index.owns(plain), "Edition differences never establish ownership");
+        auto result = index.suggest(plain, {9, 10}, {85, 100});
+        require(result.size() == 1 && result[0].version_gap && rym::passes(result[0].title, {1, 1}),
+                "Explicit editions yield a scored base-title review");
+        require(index.owns(song("Move On Up [" + edition + "]", {"Curtis Mayfield"})) &&
+                    index.owns(song("Move On Up - " + edition, {"Curtis Mayfield"})),
+                "Edition bracket and dash styles have one identity");
+        std::vector<rym::Track> unqualified{track("Move on Up", {"Curtis Mayfield"})};
+        auto reverse = rym::Index(unqualified)
+                           .suggest(song(qualified, {"Curtis Mayfield"}), {9, 10}, {85, 100});
+        require(reverse.size() == 1 && reverse[0].version_gap, "Edition review is symmetric");
+        auto whitelist =
+            rym::Whitelist::parse("songs=[{title='" + qualified + "',artist='Curtis Mayfield'}]");
+        require(!whitelist.contains(plain), "Edition-specific whitelist identity stays exact");
+    }
+    const std::vector<std::string> labels{"",
+                                          " (Extended Version)",
+                                          " [Radio Edit]",
+                                          " (Live)",
+                                          " (Demo)",
+                                          " (Club Remix)",
+                                          " (Live) (Demo)",
+                                          " (Live) [Single Version]",
+                                          " (Extended Version) (Live)",
+                                          " (Including 'Finale') (Extended Version)",
+                                          " (Extended Version) (2015 Remaster)",
+                                          " (Extended Version) [Single Version]",
+                                          " (Live) (Demo) (Extended Version)"};
+    std::vector<rym::Track> tracks;
+    for (std::size_t i = 0; i < labels.size(); ++i)
+        tracks.push_back(
+            track("Move on Up" + labels[i], {"Curtis Mayfield"}, std::to_string(i) + ".flac"));
+    for (int sparse = 0; sparse < 2; ++sparse) {
+        rym::Index index(tracks);
+        for (const auto &label : labels)
+            for (auto artist : {rym::Fraction{0, 1}, {9, 10}, {1, 1}})
+                for (auto title : {rym::Fraction{0, 1}, {85, 100}, {1, 1}}) {
+                    auto query = song("Move on Up" + label, {"Curtis Mayfield"});
+                    equal_candidates(index.suggest(query, artist, title),
+                                     index.suggest(query, artist, title, true));
+                }
+        for (int i = 0; i < 100; ++i)
+            tracks.push_back(track("Different " + std::to_string(i), {"Unrelated Artist"}));
+    }
+    auto identity = [](std::string_view title) { return rym::identity(title, {"Band"}); };
+    require(identity("Song (Extended Version) (Live)").key ==
+                identity("Song (Live) (Extended Version)").key,
+            "Edit annotations cannot conceal recording evidence through ordering");
+    require(identity("Song [Single Version] (Extended Version)").key !=
+                identity("Song (Extended Version)").key,
+            "Stacked edition labels retain all explicit evidence");
+    require(rym::review_versions(identity("Song (Live) [Single Version]").version,
+                                 identity("Song (Live) [Album Version]").version),
+            "Edition review can retain the same explicit recording");
+    for (auto left : {"Song (Live)", "Song (Live) (Demo)", "Song (Demo)", "Song (Club Remix)",
+                      "Song (Live) [Single Version]", "Song (Extended Version) (Demo)",
+                      "Song ( Live )", "Song [ Club Mix ]"}) {
+        require(!rym::review_versions(identity(left).version, identity("Song").version),
+                "Edition review cannot cross recording boundaries");
+        std::vector<rym::Track> local{track(left, {"Band"})};
+        auto review = rym::Index(local).suggest(song("Song", {"Band"}), {9, 10}, {0, 1});
+        require(review.size() == 1 && review[0].annotation_gap && review[0].version_gap &&
+                    !rym::Index(local).owns(song("Song", {"Band"})),
+                "Equal segmented bases permit review across recording differences only");
+    }
+    require(!rym::review_versions(identity("Song (Live) (Demo)").version,
+                                  identity("Song (Live)").version),
+            "All protected qualifiers participate in compatibility");
+    for (auto suffix : {" (Extended Universe)", " (Original Sin)", " (Single Ladies)",
+                        " (Album of the Year)", " (Radio Waves)", " (Version 2)", " (Editions)"}) {
+        auto name = std::string("Song") + suffix;
+        require(identity(name).title.text == rym::normalize(name, true).text,
+                "Unknown annotations and ordinary words remain significant");
+    }
+    for (auto title : {"Song (First (Live))", "Song [First [Demo]]", "Song (Part (Two))"})
+        require(identity(title).title.text == rym::normalize(title, true).text,
+                "Nested unknown annotations cannot lose surrounding title text");
+    require(identity("Song (Including 'First (Intro)')").sections.size() > 0,
+            "Balanced parentheses inside section names preserve section evidence");
+    auto long_unknown = "Song (" + std::string(60000, 'x') + ")";
+    require(identity(long_unknown).version.empty() &&
+                identity(long_unknown).title.text == rym::normalize(long_unknown, true).text,
+            "Long unknown labels remain significant without recursive pattern matching");
+    auto nested = "Song " + std::string(12000, '(') + "unknown" + std::string(12000, ')');
+    require(identity(nested).version.empty(), "Deep unknown annotations use bounded stack space");
+}
+void general_annotation_review() {
+    auto parts = [](std::string_view title) {
+        return rym::extract_annotations(rym::normalize(title).text);
+    };
+    for (auto title : {"Song (An unknown label)", "[Intro] Song", "Song (First [Second])",
+                       "Song (One) [Two]", "Ｓｏｎｇ［未知］"}) {
+        auto result = parts(title);
+        require(result.annotated && result.base == "song" && !result.source.empty(),
+                "Balanced annotation segmentation is independent of its vocabulary");
+    }
+    for (auto title : {"Song (Bad]", "Song [Bad)", "Song (Unclosed", "Song Closed)",
+                       "Song (Valid) [Unclosed", "Song ([Bad)]"}) {
+        auto result = parts(title);
+        require(!result.annotated && result.base == result.source,
+                "Malformed pairs cannot be partially removed");
+    }
+    require(parts("(Only an annotation)").base.empty(), "Empty bases cannot establish a match");
+    const std::vector<std::pair<std::string, std::string>> examples{
+        {"Move On Up", "Move on Up (Unlisted Archive Performance 2025)"},
+        {"Song", "Song (Live)"},
+        {"Song", "Song [Club Remix]"},
+        {"Song (Demo)", "Song [Instrumental]"},
+        {"Song (Part One)", "Song [Part Two]"},
+        {"Song", "[Unlisted Intro] Song (Unknown [Nested]) [Outro]"},
+        {"War Pigs", "War Pigs (Luke's Wall/Finale)"},
+        {"Café", "Cafe\xCC\x81 [別録音]"},
+        {"Song (Unknown label)", "Song [Unknown label]"}};
+    for (const auto &[plain, annotated] : examples)
+        for (bool reverse : {false, true}) {
+            auto query = song(reverse ? annotated : plain, {"Band"});
+            auto title = reverse ? plain : annotated;
+            std::vector<rym::Track> tracks{track(title, {"Band"})};
+            for (int sparse = 0; sparse < 2; ++sparse) {
+                rym::Index index(tracks);
+                auto result = index.suggest(query, {9, 10}, {1, 1});
+                require(!index.owns(query) && result.size() == 1 && result[0].annotation_gap &&
+                            rym::passes(result[0].title, {1, 1}),
+                        "Exact segmented bases always produce review rather than ownership");
+                equal_candidates(result, index.suggest(query, {9, 10}, {1, 1}, true));
+                rym::Scan scan{tracks, {}, 0};
+                auto report = rym::parse_report(rym::report_json(rym::compare_library(
+                    {{query}, rym::now_seconds()}, scan, ".", false, {9, 10}, {1, 1})));
+                require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                            report.songs[0].candidates[0].annotation_gap,
+                        "Generic annotation review survives report serialization");
+                for (int i = 0; i < 30; ++i)
+                    tracks.push_back(track("Different " + std::to_string(i), {"Other Artist"}));
+            }
+            auto whitelist =
+                rym::Whitelist(std::vector<rym::WhitelistEntry>{{{}, {}, title, {"Band"}}});
+            require(!whitelist.contains(query), "Generic segmentation cannot broaden exclusions");
+        }
+    for (auto title : {"Song (Bad]", "Song [Unclosed", "Another Song (Unknown Label)",
+                       "Song - Unknown Label", "(Song)"}) {
+        std::vector<rym::Track> local{track(title, {"Band"})};
+        auto result = rym::Index(local).suggest(song("Song", {"Band"}), {9, 10}, {1, 1});
+        require(result.empty(), "Generic review needs valid pairs and identical nonempty bases");
+    }
+    std::vector<rym::Track> unrelated{track("Song (Unknown Label)", {"Cover Artist"})};
+    require(rym::Index(unrelated).suggest(song("Song", {"Band"}), {9, 10}, {1, 1}).empty(),
+            "Annotation removal cannot bypass artist eligibility");
+    std::vector<rym::Track> unchanged{track("Song (Unknown Label)", {"Band"})};
+    rym::Index same(unchanged);
+    require(same.owns(song("SONG (UNKNOWN LABEL)", {"Band"})),
+            "A complete normalized identity takes priority over segmentation");
+    require(
+        !same.suggest(song("SONG (UNKNOWN LABEL)", {"Band"}), {9, 10}, {1, 1})[0].annotation_gap,
+        "Identical annotations do not claim an annotation difference");
+    std::vector<rym::Track> duplicates{track("Song - 2024 Remaster", {"Band"}, "a.flac"),
+                                       track("Song", {"Band"}, "b.flac"),
+                                       track("Song (2024 Remaster)", {"Band"}, "c.flac")};
+    auto query = song("Song [Entirely Unknown Label]", {"Band"});
+    for (bool reverse : {false, true}) {
+        if (reverse)
+            std::ranges::reverse(duplicates);
+        rym::Index index(duplicates);
+        auto result = index.suggest(query, {9, 10}, {1, 1});
+        require(index.unique_tracks() == 1 && result.size() == 1 && result[0].annotation_gap,
+                "Duplicate groups retain every source segmentation");
+        equal_candidates(result, index.suggest(query, {9, 10}, {1, 1}, true));
+    }
+}
+void matching_composition() {
+    struct Example {
+        std::string local_title, query_title;
+        std::vector<std::string> local_artists, query_artists;
+        bool credit{}, artist{}, section{}, compound{};
+    };
+    const std::vector<Example> examples{{"Move on Up (Extended Version)",
+                                         "Move on Up (Including 'Finale')",
+                                         {"Curtis Mayfield"},
+                                         {"Curtis Mayfield"},
+                                         false,
+                                         false,
+                                         true},
+                                        {"Move on Up/Finale (Extended Version)",
+                                         "Move on Up (Including 'Finale')",
+                                         {"Curtis Mayfield"},
+                                         {"Curtis Mayfield"},
+                                         false,
+                                         false,
+                                         true,
+                                         true},
+                                        {"Move on Up (Extended Version)",
+                                         "Move on Up",
+                                         {"Curtis Mayfield", "Guest"},
+                                         {"Curtis Mayfield"},
+                                         true},
+                                        {"Song (Extended Version)",
+                                         "Song",
+                                         {"The Silver Moon Orchestra"},
+                                         {"Silver Moon"},
+                                         false,
+                                         true},
+                                        {"Song/Finale (Extended Version)",
+                                         "Song",
+                                         {"Band", "Guest"},
+                                         {"Band"},
+                                         true,
+                                         false,
+                                         false,
+                                         true}};
+    for (const auto &example : examples) {
+        std::vector<rym::Track> tracks{track(example.local_title, example.local_artists)};
+        auto query = song(example.query_title, example.query_artists);
+        for (int sparse = 0; sparse < 2; ++sparse) {
+            rym::Index index(tracks);
+            auto result = index.suggest(query, {9, 10}, {85, 100});
+            require(!index.owns(query) && result.size() == 1 && result[0].version_gap &&
+                        result[0].credit_gap == example.credit &&
+                        result[0].artist_gap == example.artist &&
+                        result[0].section_gap == example.section &&
+                        result[0].compound_gap == example.compound,
+                    "Independent review evidence composes without establishing ownership");
+            equal_candidates(result, index.suggest(query, {9, 10}, {85, 100}, true));
+            for (int i = 0; i < 20; ++i)
+                tracks.push_back(track("Other " + std::to_string(i), {"Unrelated Artist"}));
+        }
+    }
+    std::mt19937 random(7331);
+    std::vector<rym::Track> tracks;
+    for (int i = 0; i < 240; ++i) {
+        auto title = "Song " + std::to_string(i % 47) + " summer morning";
+        if (i % 3 == 0)
+            title += " (Extended Version)";
+        if (i % 5 == 0)
+            title += " (Including 'Finale')";
+        if (i % 7 == 0)
+            title += " (Unlisted [Nested Reference])";
+        if (i % 11 == 0)
+            title += "/Finale";
+        tracks.push_back(track(std::move(title), {"Artist " + std::to_string(i % 13)},
+                               std::to_string(i) + ".flac"));
+    }
+    for (int permutation = 0; permutation < 3; ++permutation) {
+        std::ranges::shuffle(tracks, random);
+        rym::Index index(tracks);
+        for (int i = 0; i < 120; ++i) {
+            auto title = "Song " + std::to_string(random() % 47) + " summer morning";
+            if (i % 3 == 0)
+                title += " (Extended Version)";
+            if (i % 7 == 0)
+                title += " [Previously unseen annotation]";
+            if (i % 11 == 0)
+                title += "/Finale";
+            auto query = song(std::move(title), {"Artist " + std::to_string(random() % 13)});
+            auto artist = i % 3 == 0 ? rym::Fraction{0, 1} : rym::Fraction{9, 10};
+            auto cutoff = i % 5 == 0 ? rym::Fraction{0, 1} : rym::Fraction{85, 100};
+            equal_candidates(index.suggest(query, artist, cutoff),
+                             index.suggest(query, artist, cutoff, true));
+        }
+    }
 }
 void matching() {
     std::vector<rym::Track> tracks{track("Alpha (2024 Remaster)", {"Band", "Guest"}, "z.mp3"),
@@ -200,8 +604,434 @@ void matching() {
     require(index.owns(song("Alpha", {"Band", "Guest"})), "Full unordered credits");
     require(!index.owns(song("Alpha", {"Band"})), "Guest credits required");
     auto suggestions = index.suggest(song("Alpha", {"Band"}), {9, 10}, {85, 100});
-    require(suggestions.size() == 1 && suggestions[0].credit_gap, "Distinct credit gap review");
+    require(suggestions.size() == 2 && suggestions[0].credit_gap &&
+                suggestions[0].artist.numerator > 0 && !rym::passes(suggestions[0].artist, {9, 10}),
+            "Credit-mismatch review retains the actual full-credit similarity");
     equal_candidates(suggestions, index.suggest(song("Alpha", {"Band"}), {9, 10}, {85, 100}, true));
+    for (bool reverse : {false, true}) {
+        std::vector<rym::Track> editions{track("Shared song", {"Band", "Guest"}, "z.flac"),
+                                         track("Shared song", {"Guest", "Band"}, "a.flac"),
+                                         track("Shared song", {"Guest", "Band"}, "b.flac")};
+        if (reverse)
+            std::ranges::reverse(editions);
+        rym::Index grouped(editions);
+        require(grouped.unique_tracks() == 1, "Reordered duplicate credits stay grouped");
+        for (auto principal : {"Band", "Guest"}) {
+            auto query = song("Shared song", {principal});
+            auto review = grouped.suggest(query, {9, 10}, {85, 100});
+            require(!grouped.owns(query) && review.size() == 1 && review[0].credit_gap &&
+                        editions[review[0].track_id].path == "a.flac",
+                    "Duplicate editions preserve every recorded principal for review");
+            equal_candidates(review, grouped.suggest(query, {9, 10}, {85, 100}, true));
+        }
+    }
+}
+void compound_title_review() {
+    for (bool reverse : {false, true}) {
+        auto local = reverse ? "War Pigs" : "War Pigs/Luke's Wall";
+        auto title = reverse ? "War Pigs / Luke’s Wall" : "War Pigs";
+        std::vector<rym::Track> tracks{track(local, {"Black Sabbath"})};
+        auto query = song(title, {"Black Sabbath"});
+        rym::Index index(tracks);
+        require(!index.owns(query), "A slash component never establishes ownership");
+        auto candidates = index.suggest(query, {9, 10}, {85, 100});
+        require(candidates.size() == 1 && candidates[0].compound_gap &&
+                    !rym::passes(candidates[0].title, {85, 100}),
+                "War Pigs remains reviewable below the ordinary title threshold");
+        auto expected =
+            rym::similarity(rym::identity(title, {"Black Sabbath"}).title.points,
+                            rym::identity(local, {"Black Sabbath"}).title.points, {0, 1});
+        require(candidates[0].title.numerator == expected.numerator &&
+                    candidates[0].title.denominator == expected.denominator,
+                "Component reviews retain the actual full-title similarity");
+        equal_candidates(candidates, index.suggest(query, {9, 10}, {85, 100}, true));
+        rym::Scan scan{tracks, {}, 0};
+        auto report = rym::parse_report(rym::report_json(rym::compare_library(
+            {{query}, rym::now_seconds()}, scan, ".", false, {9, 10}, {85, 100})));
+        require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                    report.songs[0].candidates[0].compound_gap,
+                "Compound-title review survives report serialization");
+    }
+    for (auto local :
+         {"War Pigs/Luke's Wall (Live)", "War Pigs (Live)/Luke's Wall", "Not War Pigs/Luke's Wall",
+          "War Pigs//Luke's Wall", "War Pigs/", "War Pigs/(Finale]"}) {
+        std::vector<rym::Track> tracks{track(local, {"Black Sabbath"})};
+        require(rym::Index(tracks)
+                    .suggest(song("War Pigs", {"Black Sabbath"}), {9, 10}, {1, 1})
+                    .empty(),
+                "Component review respects recording labels and complete title boundaries");
+    }
+    for (auto title : {"1/2", "AC/DC", "Song (War Pigs/Finale)"}) {
+        std::vector<rym::Track> tracks{track(title, {"Band"})};
+        for (auto query : {"1", "AC", "War Pigs"})
+            require(rym::Index(tracks).suggest(song(query, {"Band"}), {9, 10}, {85, 100}).empty(),
+                    "Numeric, tiny, and parenthesized fragments do not create title reviews");
+    }
+    std::vector<rym::Track> tracks{
+        track("War Pigs/Luke's Wall", {"Unrelated Cover Band"}),
+        track("War Pigs/Luke's Wall", {"Black Sabbath", "Guest"}, "credits.mp3"),
+        track("War Pigs/Luke's Wall", {"Black Sabbath"}, "duplicate-b.mp3"),
+        track("War Pigs / Luke's Wall", {"Black Sabbath"}, "duplicate-a.mp3"),
+        track("War Pigs/Finale", {"Black Sabbath"}, "other.mp3"),
+        track("Été/Finale", {"Band"}, "unicode.mp3")};
+    for (int i = 0; i < 80; ++i)
+        tracks.push_back(track("Other " + std::to_string(i), {"Black Sabbath"},
+                               "other-" + std::to_string(i) + ".mp3"));
+    for (int sparse = 0; sparse < 2; ++sparse) {
+        rym::Index index(tracks);
+        for (auto query :
+             {song("War Pigs", {"Black Sabbath"}), song("Luke's Wall", {"Black Sabbath"}),
+              song("War Pigs/Luke's Wall", {"Black Sabbath"}), song("Été", {"Band"})})
+            for (auto title_cutoff : {rym::Fraction{0, 1}, {85, 100}, {1, 1}}) {
+                auto candidates = index.suggest(query, {9, 10}, title_cutoff);
+                require(!candidates.empty(), "Both retrieval paths retain compound reviews");
+                equal_candidates(candidates, index.suggest(query, {9, 10}, title_cutoff, true));
+            }
+        auto candidates = index.suggest(song("War Pigs", {"Black Sabbath"}), {9, 10}, {85, 100});
+        require(candidates.size() == 3 && candidates[1].track_id == 3 && candidates[2].credit_gap,
+                "Compound candidates deduplicate editions and retain credit-mismatch labels");
+        for (int i = 0; i < 400; ++i)
+            tracks.push_back(track("Unrelated " + std::to_string(i), {"Other Artist"}));
+    }
+    std::vector<rym::Track> same{track("Weird Fishes/ Arpeggi", {"Radiohead"})};
+    require(rym::Index(same).owns(song("Weird Fishes / Arpeggi", {"Radiohead"})),
+            "Slash spacing still permits exact ownership");
+}
+void normalized_component_review() {
+    for (const auto &[single, compound] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"War Pigs", "War Pigs [Bonus material]/Luke's Wall"},
+             {"War Pigs [Other notes]", "War Pigs [Bonus material]/Luke's Wall"},
+             {"War Pigs", "War Pigs [Nested (unknown annotation)]/Luke's Wall [Finale]"},
+             {"Été", "Été [Notes inconnues]/Finale"},
+             {"War Pigs", "\"War Pigs\"/\"Luke's Wall\""},
+             {"War Pigs", "Intro/War Pigs/Finale/Encore/Outro"},
+             {"War Pigs", "War Pigs [One [Two [Three [Four [Five [Six [Seven [Eight [Nine]]]]]]]]]/Finale"}})
+        for (bool reverse : {false, true}) {
+            std::vector<rym::Track> tracks{
+                track(reverse ? single : compound, {"Band"}, "target.flac")};
+            auto query = song(reverse ? compound : single, {"Band"});
+            auto annotation = compound.find('[') != compound.npos;
+            for (int sparse = 0; sparse < 2; ++sparse) {
+                for (std::size_t i = tracks.size(); i < (sparse ? 500u : 80u); ++i)
+                    tracks.push_back(track("Unrelated title " + std::to_string(i),
+                                           {sparse ? "Other Artist" : "Band"},
+                                           std::to_string(i) + ".flac"));
+                rym::Index index(tracks);
+                auto result = index.suggest(query, {9, 10}, {1, 1});
+                require(!index.owns(query) && result.size() == 1 && result[0].track_id == 0 &&
+                            result[0].compound_gap && result[0].annotation_gap == annotation &&
+                            result[0].title.numerator < result[0].title.denominator,
+                        "Annotation removal and quote formatting precede whole-component review");
+                equal_candidates(result, index.suggest(query, {9, 10}, {1, 1}, true));
+                auto single_name = rym::identity(single, {"Band"});
+                auto compound_name = rym::identity(compound, {"Band"});
+                auto shorter = annotation ? rym::normalize(single_name.annotations.annotated
+                                                              ? single_name.annotations.base
+                                                              : single_name.title.text)
+                                          : single_name.title;
+                auto longer = annotation ? rym::normalize(compound_name.annotations.base)
+                                         : compound_name.title;
+                require(result[0].title.numerator == shorter.points.size() &&
+                            result[0].title.denominator == longer.points.size(),
+                        "Component reviews score the actual selected complete comparison forms");
+            }
+        }
+    for (auto title : {"War Pigs Forever/Finale", "Not War Pigs/Finale",
+                       "War Pigs [Unbalanced)/Finale", "War Pigs [Bonus]//Finale",
+                       "War Pigs (Live)/Finale", "War Pigs [Bonus]/Finale (Live)"}) {
+        std::vector<rym::Track> tracks{track(title, {"Band"})};
+        rym::Index index(tracks);
+        auto query = song("War Pigs", {"Band"});
+        require(index.suggest(query, {9, 10}, {1, 1}).empty(),
+                "Normalized components reject substrings, malformed input, and recording conflicts");
+        equal_candidates(index.suggest(query, {9, 10}, {1, 1}),
+                         index.suggest(query, {9, 10}, {1, 1}, true));
+    }
+    std::vector<rym::Track> tracks{track("War Pigs [Bonus]/Finale", {"Band"})};
+    rym::Scan scan{tracks, {}, 0};
+    auto report = rym::parse_report(rym::report_json(rym::compare_library(
+        {{song("War Pigs", {"Band"})}, rym::now_seconds()}, scan, ".", false,
+        {9, 10}, {1, 1})));
+    require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                report.songs[0].candidates[0].compound_gap &&
+                report.songs[0].candidates[0].annotation_gap,
+            "Normalized component reasons survive report round trips");
+}
+void included_section_review() {
+    const std::string annotated = "The Court of the Crimson King (Including 'The Return of the "
+                                  "Fire Witch' and 'The Dance of the Puppets')";
+    auto request = song(annotated, {"King Crimson"});
+    std::vector<rym::Track> local{
+        track("The Court Of the Crimson King", {"King Crimson"}, "court.flac")};
+    rym::Index index(local);
+    require(!index.owns(request), "Included-section differences cannot prove ownership");
+    auto candidates = index.suggest(request, {9, 10}, {85, 100});
+    require(candidates.size() == 1 && candidates[0].section_gap &&
+                candidates[0].title.numerator == candidates[0].title.denominator,
+            "Perfect base-title similarity still requires section review");
+    rym::Scan scan;
+    scan.tracks = local;
+    auto report = rym::parse_report(rym::report_json(rym::compare_library(
+        {{request}, rym::now_seconds()}, scan, ".", true, {9, 10}, {85, 100})));
+    require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                report.songs[0].candidates[0].section_gap &&
+                report.songs[0].song.title == annotated,
+            "The Court remains visible for review after report round trips");
+    auto exclusion = rym::Whitelist::parse(
+        "songs=[{title='The Court Of the Crimson King',artist='King Crimson'}]");
+    require(!exclusion.contains(request),
+            "Short-title whitelist entries do not erase section differences");
+    require(rym::Whitelist(std::vector<rym::WhitelistEntry>{{{}, request.url, {}, {}}})
+                .contains(request),
+            "An explicit song-URL exclusion still applies");
+    std::vector<rym::Track> editions{
+        track("Song (Including 'First' and 'Second')", {"Band"}, "a.flac"),
+        track("Song", {"Band"}, "base.flac"),
+        track("Song (Including 'Different')", {"Band"}, "different.flac")};
+    rym::Index variants(editions);
+    require(variants.unique_tracks() == 3, "Section differences keep distinct local editions");
+    auto same = song("Song [Including \"First\", \"Second\"]", {"Band"});
+    require(variants.owns(same), "Formatting-only differences in the same section list are exact");
+    auto result = variants.suggest(same, {9, 10}, {85, 100});
+    require(result.size() == 3 && !result[0].section_gap && result[1].section_gap &&
+                result[2].section_gap,
+            "Suggestions prefer matching section evidence without hiding review alternatives");
+    for (const auto &title :
+         {"Song", "Song (Including 'First' and 'Second')", "Song (Including 'Second' and 'First')",
+          "Song (Including 'Different')"})
+        for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{85, 100}, rym::Fraction{1, 1}}) {
+            auto query = song(title, {"Band"});
+            equal_candidates(variants.suggest(query, {9, 10}, cutoff),
+                             variants.suggest(query, {9, 10}, cutoff, true));
+        }
+    std::vector<rym::Track> live{track("Song (Live)", {"Band"})};
+    auto review =
+        rym::Index(live).suggest(song("Song (Including 'First')", {"Band"}), {9, 10}, {85, 100});
+    require(review.size() == 1 && review[0].annotation_gap && review[0].version_gap &&
+                review[0].section_gap,
+            "Exact segmented bases expose recording and section differences together");
+}
+void artist_credit_overlap() {
+    auto query = song("All Along the Watchtower", {"The Jimi Hendrix Experience"});
+    query.album = "Electric Ladyland";
+    std::vector<rym::Track> tracks{
+        track("All Along the Watchtower", {"Jimi Hendrix"}, "hendrix.flac"),
+        track("All Along the Watchtower", {"Bob Dylan"}, "other.flac"),
+        track("All Along the Watchtower", {"Jimi Hendrix"}, "z-duplicate.mp3")};
+    tracks[0].album = "Different compilation";
+    rym::Index index(tracks);
+    auto candidates = index.suggest(query, {9, 10}, {85, 100});
+    require(!index.owns(query) && candidates.size() == 1 && candidates[0].track_id == 0 &&
+                candidates[0].artist_gap && !candidates[0].credit_gap &&
+                candidates[0].artist.numerator > 0 && !rym::passes(candidates[0].artist, {9, 10}) &&
+                candidates[0].title.numerator == candidates[0].title.denominator,
+            "Exact title plus expanded artist credit is review-only with honest text scores");
+    equal_candidates(candidates, index.suggest(query, {9, 10}, {85, 100}, true));
+    require(
+        index.suggest(song("All Along the Watchtowxr", query.artists), {9, 10}, {85, 100}).empty(),
+        "Artist-overlap fallback requires an exact normalized title");
+    auto live_review =
+        index.suggest(song("All Along the Watchtower (Live)", query.artists), {9, 10}, {85, 100});
+    require(live_review.size() == 1 && live_review[0].artist_gap && live_review[0].annotation_gap &&
+                live_review[0].version_gap,
+            "Artist overlap and exact segmented bases retain separate review reasons");
+    auto exclusions =
+        rym::Whitelist::parse("songs=[{title='All Along the Watchtower',artist='Jimi Hendrix'}]");
+    require(!exclusions.contains(query),
+            "Artist overlap never broadens exact whitelist identities");
+    rym::Scan scan;
+    scan.tracks = tracks;
+    auto report = rym::parse_report(rym::report_json(
+        rym::compare_library({{query}, rym::now_seconds()}, scan, ".", false, {9, 10}, {85, 100})));
+    require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                report.songs[0].candidates[0].artist_gap,
+            "Artist-overlap review survives comparison and report round trips");
+    for (const auto &[short_name, long_name] : std::vector<std::pair<std::string, std::string>>{
+             {"Jimi Hendrix", "The Jimi Hendrix Experience"},
+             {"Alice Meadow", "Orchestra featuring Alice Meadow"},
+             {"Zoë Rivera", "The Zoë Rivera Ensemble"},
+             {"Echo Echo", "The Echo Echo Ensemble"}})
+        for (bool reverse : {false, true}) {
+            std::vector<rym::Track> local{track("Song", {reverse ? long_name : short_name})};
+            rym::Index variants(local);
+            auto request = song("Song", {reverse ? short_name : long_name});
+            auto result = variants.suggest(request, {9, 10}, {85, 100});
+            require(!variants.owns(request) && result.size() == 1 && result[0].artist_gap,
+                    "Artist phrase overlap is symmetric and Unicode-safe");
+            equal_candidates(result, variants.suggest(request, {9, 10}, {85, 100}, true));
+        }
+    for (const auto &[short_name, long_name] : std::vector<std::pair<std::string, std::string>>{
+             {"Hendrix", "The Jimi Hendrix Experience"},
+             {"The National", "National Symphony Orchestra"},
+             {"Jimi Hendrix", "The Jimi Hendrixson Experience"},
+             {"Jimi Hendrix", "Jimi Young and Tony Hendrix"},
+             {"Jimi and", "The Jimi and Orchestra"}}) {
+        std::vector<rym::Track> local{track("Song", {long_name})};
+        rym::Index variants(local);
+        auto request = song("Song", {short_name});
+        auto result = variants.suggest(request, {9, 10}, {85, 100});
+        require(result.empty(),
+                "Single words, generic words, and partial words do not imply an artist variant");
+        equal_candidates(result, variants.suggest(request, {9, 10}, {85, 100}, true));
+    }
+    std::vector<rym::Track> large;
+    for (std::size_t i = 0; i < 60; ++i) {
+        auto name = "Performer " + std::to_string(i);
+        large.push_back(track("Song", {name}, std::to_string(i) + ".flac"));
+        large.push_back(track("Song [Single Version]", {"The " + name + " Orchestra"},
+                              std::to_string(i) + "-single.flac"));
+    }
+    rym::Index varied(large);
+    for (const auto &local : large)
+        for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{9, 10}, rym::Fraction{1, 1}}) {
+            auto request = song(local.title, local.artists);
+            equal_candidates(varied.suggest(request, cutoff, {85, 100}),
+                             varied.suggest(request, cutoff, {85, 100}, true));
+        }
+}
+void slash_artist_credit_review() {
+    for (auto credit : {"Clams Casino/ Imogen Heap", "Clams Casino / Imogen Heap",
+                        "Clams Casino/Imogen Heap", "Imogen Heap/Clams Casino",
+                        "Other Artist / Clams Casino / Imogen Heap"})
+        for (bool reverse : {false, true}) {
+            std::vector<rym::Track> local{
+                track("I'm God", {reverse ? "Clams Casino" : credit})};
+            rym::Index index(local);
+            auto query = song("I'm God", {reverse ? credit : "Clams Casino"});
+            auto result = index.suggest(query, {9, 10}, {85, 100});
+            require(!index.owns(query) && result.size() == 1 && result[0].artist_gap &&
+                        !result[0].credit_gap && !rym::passes(result[0].artist, {9, 10}) &&
+                        result[0].title.numerator == result[0].title.denominator,
+                    "Slash-delimited multiword credit overlap needs review with honest scores");
+            equal_candidates(result, index.suggest(query, {9, 10}, {85, 100}, true));
+            require(index.suggest(song("I'm Gods", query.artists), {9, 10}, {85, 100}).empty(),
+                    "Slash credit overlap still requires an exact base title");
+        }
+    std::vector<rym::Track> local{track("I'm God", {"Clams Casino/ Imogen Heap"})};
+    rym::Index index(local);
+    require(index.owns(song("I'm God", {"Clams Casino/ Imogen Heap"})),
+            "An unchanged complete slash credit can establish exact ownership");
+    require(!rym::Whitelist::parse("songs=[{title=\"I'm God\",artist='Clams Casino/ Imogen Heap'}]")
+                 .contains(song("I'm God", {"Clams Casino"})),
+            "Slash review boundaries do not broaden whitelist identities");
+    rym::Scan scan;
+    scan.tracks = local;
+    auto report = rym::parse_report(rym::report_json(rym::compare_library(
+        {{song("I'm God", {"Clams Casino"})}, rym::now_seconds()}, scan, ".", false,
+        {9, 10}, {85, 100})));
+    require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                report.songs[0].candidates[0].artist_gap,
+            "Slash-credit review survives comparison and report serialization");
+    for (const auto &[short_name, full_credit] :
+         std::vector<std::pair<std::string, std::string>>{
+             {"AC", "AC/DC"}, {"DC", "AC/DC"}, {"AC/DC", "AC/DC / Guest Artist"},
+             {"Clams", "Clams/ Imogen Heap"},
+             {"Alpha / Beta", "Alpha / Beta / Guest Artist"},
+             {"The / National", "The / National / Guest Artist"},
+             {"Clams Casino", "Clams Casinova/ Imogen Heap"},
+             {"Clams Casino", "Other Clams/ Casino Artist"}}) {
+        std::vector<rym::Track> tracks{track("Song", {full_credit})};
+        rym::Index variants(tracks);
+        auto query = song("Song", {short_name});
+        auto result = variants.suggest(query, {9, 10}, {85, 100});
+        require(result.empty(), "Slash review does not infer single-word or partial artists");
+        equal_candidates(result, variants.suggest(query, {9, 10}, {85, 100}, true));
+    }
+    std::vector<rym::Track> varied;
+    for (std::size_t i = 0; i < 60; ++i) {
+        auto name = "Performer " + std::to_string(i);
+        varied.push_back(track("Song", {name}, std::to_string(i) + ".flac"));
+        varied.push_back(track("Song", {"Guest Artist/ " + name},
+                               std::to_string(i) + "-guest.flac"));
+    }
+    rym::Index variants(varied);
+    for (const auto &value : varied)
+        for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{9, 10}, rym::Fraction{1, 1}}) {
+            auto query = song(value.title, value.artists);
+            equal_candidates(variants.suggest(query, cutoff, {85, 100}),
+                             variants.suggest(query, cutoff, {85, 100}, true));
+        }
+}
+void diacritic_review() {
+    for (const auto &[original, expected] :
+         std::vector<std::pair<std::string, std::u32string>>{
+             {"Bôa", U"boa"}, {"Été", U"ete"}, {"Ångström", U"angstrom"},
+             {"façade", U"facade"}, {"Ắ", U"a"}, {"a\xCC\xA3\xCC\x81", U"a"}}) {
+        auto result = rym::latin_diacritics(rym::normalize(original).points);
+        require(result && *result == expected, "Latin diacritics have a separate review spelling");
+    }
+    for (auto original : {"BoA", "AC/DC", "が", "क़", "ά", "й", "未知", "ø", "a️", "a्"})
+        require(!rym::latin_diacritics(rym::normalize(original).points),
+                "ASCII, other scripts, variation selectors, and undecomposable letters stay intact");
+    for (bool reverse : {false, true}) {
+        std::vector<rym::Track> tracks{track("Duvet", {reverse ? "Bôa" : "BoA"})};
+        auto query = song("Duvet", {reverse ? "BoA" : "Bôa"});
+        rym::Index index(tracks);
+        auto result = index.suggest(query, {9, 10}, {85, 100});
+        require(!index.owns(query) && result.size() == 1 && result[0].diacritic_gap &&
+                    !result[0].artist_gap && !result[0].credit_gap &&
+                    result[0].artist.numerator == 2 && result[0].artist.denominator == 3,
+                "Duvet by Bôa versus BoA needs review and retains its actual artist score");
+        equal_candidates(result, index.suggest(query, {9, 10}, {85, 100}, true));
+        require(index.owns(song("Duvet", tracks[0].artists)),
+                "Unchanged accents still permit exact ownership");
+        auto whitelist = rym::Whitelist(std::vector<rym::WhitelistEntry>{
+            {{}, {}, "Duvet", tracks[0].artists}});
+        require(!whitelist.contains(query), "Accent folding cannot broaden whitelist identity");
+        rym::Scan scan{tracks, {}, 0};
+        auto report = rym::parse_report(rym::report_json(rym::compare_library(
+            {{query}, rym::now_seconds()}, scan, ".", false, {9, 10}, {85, 100})));
+        require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                    report.songs[0].candidates[0].diacritic_gap,
+                "Diacritic review remains visible after report serialization");
+    }
+    std::vector<rym::Track> collaborations{track("Été", {"Á", "B"})};
+    rym::Index collaboration(collaborations);
+    auto request = song("Ete", {"B", "A"});
+    auto result = collaboration.suggest(request, {1, 1}, {1, 1});
+    require(!collaboration.owns(request) && result.size() == 1 && result[0].diacritic_gap &&
+                result[0].title.numerator == 1 && result[0].title.denominator == 3,
+            "Folded collaboration credits reorder safely and titles retain actual scores");
+    equal_candidates(result, collaboration.suggest(request, {1, 1}, {1, 1}, true));
+    for (const auto &[title, artists] :
+         std::vector<std::pair<std::string, std::vector<std::string>>>{
+             {"Duvet", {"Unrelated Artist"}}, {"Duvet (Live)", {"BoA"}},
+             {"Duvet", {"BoA", "Bôa"}}}) {
+        std::vector<rym::Track> tracks{track(title, artists)};
+        rym::Index index(tracks);
+        auto query = song("Duvet", {"Bôa"});
+        auto candidates = index.suggest(query, {9, 10}, {85, 100});
+        if (artists.size() == 1 && title == "Duvet (Live)")
+            require(candidates.size() == 1 && candidates[0].version_gap &&
+                        candidates[0].annotation_gap && candidates[0].diacritic_gap,
+                    "Artist spelling review composes with existing exact-base recording review");
+        else
+            require(candidates.empty(),
+                    "Accent review requires matching complete credits, preserving collisions");
+        equal_candidates(candidates, index.suggest(query, {9, 10}, {85, 100}, true));
+    }
+    std::vector<rym::Track> long_names{
+        track("é" + std::string(12000, 'x') + "é", {"BoA"})};
+    auto long_query = song("e" + std::string(12000, 'x') + "e", {"Bôa"});
+    auto long_result = rym::Index(long_names).suggest(long_query, {9, 10}, {85, 100});
+    require(long_result.size() == 1 && long_result[0].diacritic_gap &&
+                long_result[0].title.numerator == 12000 &&
+                long_result[0].title.denominator == 12002,
+            "Long accent reviews use a valid narrow edit bound for exact raw scores");
+    std::vector<rym::Track> varied;
+    for (int i = 0; i < 120; ++i)
+        varied.push_back(track((i % 2 ? "Song " : "Sóng ") + std::to_string(i % 31),
+                               {(i % 3 ? "Band " : "Bánd ") + std::to_string(i % 7)},
+                               std::to_string(i) + ".flac"));
+    rym::Index varied_index(varied);
+    for (int i = 0; i < 80; ++i) {
+        auto query = song((i % 2 ? "Song " : "Sòng ") + std::to_string(i % 31),
+                          {(i % 3 ? "Band " : "Bànd ") + std::to_string(i % 7)});
+        for (auto cutoff : {rym::Fraction{0, 1}, {9, 10}, {1, 1}})
+            equal_candidates(varied_index.suggest(query, cutoff, cutoff),
+                             varied_index.suggest(query, cutoff, cutoff, true));
+    }
 }
 void oracle() {
     std::mt19937 random(4815);
@@ -266,6 +1096,34 @@ void distance_oracle() {
                         "Bounded distance differs from independent DP");
             }
         }
+    std::mt19937 random(8193);
+    for (int trial = 0; trial < 120; ++trial) {
+        std::u32string a(12 + random() % 180, U'a');
+        for (auto &point : a)
+            point = U"abéλ"[random() % 4];
+        auto b = a;
+        for (std::size_t i = 0; i < 1 + random() % 24; ++i)
+            b[random() % b.size()] = U"abéλ"[random() % 4];
+        if (trial % 2)
+            b.insert(random() % b.size(), 1, U'x');
+        if (trial % 3)
+            b.erase(random() % b.size(), 1);
+        auto expected = reference(a, b);
+        for (auto limit : {std::size_t{0}, expected ? expected - 1 : 0, expected, expected + 1,
+                           std::max(a.size(), b.size())}) {
+            auto actual = rym::edit_distance(a, b, limit);
+            auto reversed = rym::edit_distance(b, a, limit);
+            require(expected <= limit ? actual == expected && reversed == expected
+                                      : actual > limit && reversed > limit,
+                    "Changing band boundaries cannot read stale worker scratch values");
+        }
+    }
+    std::u32string long_name(4096, U'a'), changed = long_name;
+    for (std::size_t i = 10; i < changed.size(); i += 200)
+        changed[i] = U'b';
+    require(rym::edit_distance(long_name, changed, 21) == 21 &&
+                rym::edit_distance(changed, long_name, 20) > 20,
+            "Long narrow bands retain exact edit-distance boundaries");
 }
 void parsing() {
     auto fixture = std::filesystem::path(RYM_FIXTURES);
@@ -318,6 +1176,11 @@ void parsing() {
     require(rym::browser_page_state(chart, second, "complete", "page_charts_section_charts_item") ==
                 State::loading,
             "Previous chart document cannot satisfy the next page request");
+    require(rym::browser_page_state("https://rateyourmusic.com/", second, "complete",
+                                    "<title>RYM homepage</title>") == State::loading &&
+                rym::browser_page_state("https://rateyourmusic.com/", second, "complete",
+                                        "<title>RYM homepage</title>", true) == State::verification,
+            "A homepage cannot satisfy chart retrieval and needs recovery only after the deadline");
     require(rym::browser_page_state("https://rateyourmusic.com/charts/top/song/all-time/2/#top",
                                     second, "complete",
                                     "page_charts_section_charts_item") == State::ready,
@@ -384,6 +1247,27 @@ void acquisition() {
                 std::vector<std::string>{"https://rateyourmusic.com/charts/top/song/all-time/2/"} &&
             collected == std::vector<std::size_t>{2, 3},
         "Later-page verification retries that URL without restarting collected ranks");
+    std::size_t homepage_attempts{}, homepage_prompts{};
+    rym::AccessTransport homepage_redirect(
+        [&](std::string_view url) {
+            if (++homepage_attempts == 1) {
+                require(rym::browser_page_state("https://rateyourmusic.com/", url, "complete",
+                                                "<title>Homepage</title>", true) ==
+                            rym::BrowserPageState::verification,
+                        "An unexpected homepage requires recovery after the loading deadline");
+                throw rym::VerificationRequired("Chart request returned the homepage");
+            }
+            return mock.fetch(url);
+        },
+        [&](std::string_view url, rym::AccessReason reason) {
+            ++homepage_prompts;
+            require(url == "https://rateyourmusic.com/charts/top/song/all-time/" &&
+                        reason == rym::AccessReason::verification,
+                    "Homepage recovery opens the requested chart rather than the redirected URL");
+        });
+    require(rym::fetch_chart(homepage_redirect, 2).songs.size() == 2 &&
+                homepage_attempts == 2 && homepage_prompts == 1,
+            "A homepage redirect retries the original chart after one access handoff");
     std::size_t attempts{}, prompts{};
     rym::AccessTransport blocked(
         [&](std::string_view) -> std::string {
@@ -879,6 +1763,16 @@ int main(int argc, char **argv) {
     for (const auto &[name, function] : std::vector<std::pair<std::string, std::function<void()>>>{
              {"normalization", normalization},
              {"matching metadata examples", matching_examples},
+             {"shared matching pipeline", matching_pipeline},
+             {"edition review", edition_review},
+             {"general annotation review", general_annotation_review},
+             {"matching composition and ranking", matching_composition},
+             {"included section review", included_section_review},
+             {"compound title review", compound_title_review},
+             {"normalized component review", normalized_component_review},
+             {"artist credit overlap", artist_credit_overlap},
+             {"slash artist credit review", slash_artist_credit_review},
+             {"diacritic review", diacritic_review},
              {"matching", matching},
              {"indexed oracle", oracle},
              {"distance oracle", distance_oracle},

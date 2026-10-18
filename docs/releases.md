@@ -2,39 +2,69 @@
 
 ## Automatic publishing
 
-The [release workflow](https://github.com/antidemosthenes/rym_crosscheck/blob/main/.github/workflows/release.yml) runs on pushes to `main`. Each push publishes the executable built from that push's final commit; pushing several commits together produces one release. You can also select **Actions → Windows x64 release → Run workflow** on `main` to retry a failed run.
+The [workflow](https://github.com/antidemosthenes/rym_crosscheck/blob/main/.github/workflows/release.yml) runs on pushes to `main` and manual dispatch on `main`.
+One push produces one release from its final commit.
 
-The workflow uses a Windows runner with Visual Studio 2026, CMake, Ninja, GitHub CLI, and 7-Zip. It configures the **Release preset** with `RYM_BUILD_TESTS=OFF`, builds both programs, and packages `build/release/portable/missing-report.exe` at the archive root with `build/release/portable/bin/rym-crosscheck.exe` under `bin/` and an empty `data/` directory. It neither compiles nor runs project tests. Ordinary local defaults are unchanged; see the [build guide](build.md) and [testing guide](testing.md).
+The workflow builds the Release preset on Windows with Visual Studio 2026.
+It disables project tests. It caches verified dependency downloads, not compiled objects or personal data.
 
-Pinned, hash-verified dependency archives for all nine dependencies are cached between runs. Archive names include their hashes; compatible archives can be restored even when other dependency versions change. Only missing archives are downloaded. Compiled objects, application caches, and browser profiles are not cached. The first run takes longer because it downloads and compiles all dependencies; subsequent runs reuse downloads but still extract and compile from source on the fresh runner.
+Fresh runners still extract and compile dependencies. Helper cleanup keeps `build/downloads/`.
+Only missing archives require downloads. [Build](build.md) explains the archive cache.
 
-The helper's fresh configuration clears `build/` except `build/downloads/`, so restored archives survive cleanup. The following `build` action reuses that configuration and keeps tests disabled. Local use of the same configuration command also removes old portable runtime data and release archives; preserve any wanted data outside `build/` first.
+`GITHUB_TOKEN` requires `contents: write` for tags, assets, and releases.
+Repository policies must permit these operations.
 
-The workflow's `GITHUB_TOKEN` requests `contents: write` to create tags, upload assets, and publish releases. No personal access token is needed. Repository or organization policies and tag rules must permit these operations. If they deny publication, the run fails with the GitHub error; local packaging remains available.
+## Versions and retry behavior
 
-## Versions, titles, and notes
+| Item | Behavior |
+| --- | --- |
+| Initial version | Start at `v1.0.0`. |
+| Later version | Increase the patch number of the highest stable tag. |
+| Release title | Use the version tag. |
+| Release notes | Use the full message of the triggering commit. |
+| Existing commit tag | Reuse a stable tag already attached to that commit. |
+| Published release | Keep the release intact. |
+| Failed draft | Retry the draft. |
 
-- The first release is **`v1.0.0`**. Subsequent releases increment the patch number of the highest stable `vMAJOR.MINOR.PATCH` tag: `v1.0.1`, `v1.0.2`, and so on. Prerelease and unrelated tags are ignored. Creating a higher stable major/minor tag manually starts that version line.
-- The release title is its version tag. Its notes contain the triggering commit's full message, including the subject and body. Commit messages are read as data from Git and passed in a notes file.
-- A retry of a tagged commit reuses its existing stable tag. An already published release is left intact. A failed draft can be completed on retry; published assets and notes are never overwritten.
-- Release runs are serialized, with up to 100 pending runs queued rather than cancelled when another push arrives. Versions are assigned in processing order; see [GitHub's concurrency documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+Workflow runs execute sequentially, with up to 100 pending runs.
+Versions follow processing order.
+[GitHub's guide](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency) explains concurrency controls.
 
-No tag is created until compilation and archive verification succeed. Publishing first creates a draft, uploads both assets, and then makes it public. An upload failure can leave a tag and draft for the next retry.
+The workflow packages and checks the archive before tag creation.
+It creates a draft, uploads assets, and publishes the release.
+A failure can leave a tag or draft for retry.
+The workflow never moves an existing conflicting tag.
 
 ## Download contents
 
-Each release has two assets:
+Assets use this naming pattern:
 
 ```text
 rym-crosscheck-v1.0.0-windows-x64.7z
 rym-crosscheck-v1.0.0-windows-x64.7z.sha256
 ```
 
-The archive contains one folder with the optimized Release launcher and CLI, README, documentation, `whitelist.example.toml`, project license, SDK and other third-party notices, and `version.txt` recording the tag and commit. It includes no test executables, debug build, personal whitelist, reports, settings, music, browser data, or runtime cache. Packaging copies an explicit allowlist of files, never the contents of a local build’s `data/` directory.
+The archive contains:
 
-The executable requires Windows x64, an AVX2-capable CPU, and the [Microsoft Visual C++ x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist). Microsoft Edge is needed for live comparisons. The reviewer separately requires the [WebView2 Evergreen Runtime](https://developer.microsoft.com/microsoft-edge/webview2/#download-section); the static loader is included in the executable, but the runtime is not bundled or installed automatically. Extract the archive before following the [README](../README.md).
+```text
+rym-crosscheck-v1.0.0-windows-x64/
+  missing-report.exe
+  bin/rym-crosscheck.exe
+  data/                         (empty)
+  README.md
+  docs/
+  whitelist.example.toml
+  LICENSE
+  third-party-licenses/
+  version.txt
+```
 
-To verify a downloaded archive, compare this output with the accompanying `.sha256` file:
+Packaging copies an explicit file list.
+It excludes tests, Debug binaries, reports, active whitelists, settings, caches, browser profiles, and music.
+
+`version.txt` records the tag and commit. [README](../README.md#quick-start) lists runtime requirements.
+
+Check the archive hash against its checksum file:
 
 ```powershell
 Get-FileHash ./rym-crosscheck-v1.0.0-windows-x64.7z -Algorithm SHA256
@@ -42,7 +72,11 @@ Get-FileHash ./rym-crosscheck-v1.0.0-windows-x64.7z -Algorithm SHA256
 
 ## Manual packaging and publication
 
-From the repository root, build without tests and package locally:
+1. Close executables from the build directories.
+2. Copy required personal data outside `build/`.
+3. Run the commands below.
+
+These commands remove old outputs except downloads:
 
 ```powershell
 ./scripts/build.ps1 -Action configure -Preset release -BuildTests OFF
@@ -50,40 +84,63 @@ From the repository root, build without tests and package locally:
 ./scripts/release.ps1
 ```
 
-Install 7-Zip or put `7z.exe` on PATH. Local packaging does not require GitHub CLI, credentials, or a network connection once dependencies are built. It creates the `.7z`, checksum, and `release-notes.txt` under Git-ignored `build/releases/`. Staging files are removed even on controlled failure. Only the Release preset's two application executables are packaged, regardless of whether Debug or test binaries also exist.
+Local packaging requires 7-Zip. It does not require GitHub CLI or authentication.
+Outputs are under `build/releases/`: the archive, SHA-256 file, and `release-notes.txt`.
+Packaging removes its temporary staging directory.
 
-Before packaging manually, update your tags and build the intended source revision. Local packaging includes working-tree changes in the executable and documents; `version.txt` and notes identify `HEAD`. Use a clean checkout for a reproducible published release. The workflow always uses a fresh checkout of the triggering commit.
+Publication requires a clean checkout.
+Local binaries and documentation can include working-tree changes, but version metadata still identifies `HEAD`.
+The workflow uses a fresh checkout.
 
-To publish manually, open the repository's **Releases → Draft a new release**, select or create the version tag for the built commit, use that version as the title, paste `release-notes.txt`, and upload the `.7z` and `.sha256` assets. Review and publish. Packaging by itself creates no Git tag or GitHub release.
+For manual web publication:
 
-For authenticated command-line publication with GitHub CLI, the same helper supports:
+1. Create a draft release for the built commit.
+2. Use the version tag as the title.
+3. Use `release-notes.txt` as the release notes.
+4. Attach the archive and checksum assets.
+5. Check the draft.
+6. Publish the release.
+
+Authenticated CLI publication uses:
 
 ```powershell
 ./scripts/release.ps1 -Publish -Repository OWNER/REPO
 ```
 
-Authenticate `gh` first. The workflow supplies `GITHUB_REPOSITORY` and its token automatically. A conflicting tag pointing to another commit is an error; the helper never moves an existing tag.
+Packaging without `-Publish` creates no tag or GitHub release.
 
 ## Third-party sources and notices
 
-Release archives preserve upstream license and notice files in `third-party-licenses/`. The following unmodified dependency sources correspond to this build; their pinned archive URLs and SHA-256 hashes are recorded in [Dependencies.cmake](https://github.com/antidemosthenes/rym_crosscheck/blob/main/cmake/Dependencies.cmake). To inspect the exact build, select the release tag in the source repository.
+[Dependencies.cmake](https://github.com/antidemosthenes/rym_crosscheck/blob/main/cmake/Dependencies.cmake) defines archive URLs and SHA-256 hashes.
+The source tag identifies the exact dependency build.
 
-| Dependency | Version | Source archive |
+| Dependency | Version | Source |
 | --- | --- | --- |
 | Boost | 1.92.0 | [Modular release](https://github.com/boostorg/boost/releases/download/boost-1.92.0/boost-1.92.0-cmake.tar.xz) |
-| TagLib | 2.3.2 | [Source](https://github.com/taglib/taglib/archive/refs/tags/v2.3.2.tar.gz) |
-| utf8cpp | 4.2.1 | [Source](https://github.com/nemtrif/utfcpp/archive/refs/tags/v4.2.1.tar.gz) |
-| zlib | 1.3.2 | [Source](https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz) |
-| utf8proc | 2.12.0 | [Source](https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.12.0.tar.gz) |
-| Lexbor | 3.0.0 | [Source](https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz) |
-| CLI11 | 2.7.2 | [Source](https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.7.2.tar.gz) |
-| toml++ | 3.4.0 | [Source](https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz) |
-| WebView2 SDK | 1.0.4258.31 | [SDK package](https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg) |
+| TagLib | 2.3.2 | [Archive](https://github.com/taglib/taglib/archive/refs/tags/v2.3.2.tar.gz) |
+| utf8cpp | 4.2.1 | [Archive](https://github.com/nemtrif/utfcpp/archive/refs/tags/v4.2.1.tar.gz) |
+| zlib | 1.3.2 | [Archive](https://github.com/madler/zlib/archive/refs/tags/v1.3.2.tar.gz) |
+| utf8proc | 2.12.0 | [Archive](https://github.com/JuliaStrings/utf8proc/archive/refs/tags/v2.12.0.tar.gz) |
+| Lexbor | 3.0.0 | [Archive](https://github.com/lexbor/lexbor/archive/refs/tags/v3.0.0.tar.gz) |
+| CLI11 | 2.7.2 | [Archive](https://github.com/CLIUtils/CLI11/archive/refs/tags/v2.7.2.tar.gz) |
+| toml++ | 3.4.0 | [Archive](https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz) |
+| WebView2 SDK | 1.0.4258.31 | [Package](https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.4258.31/microsoft.web.webview2.1.0.4258.31.nupkg) |
 
-TagLib is distributed under its MPL option; its source is available through the link above. Both upstream license texts are retained for reference. The application license is in [LICENSE](../LICENSE).
+Release archives retain upstream licenses and notices.
+TagLib uses its MPL option. Packaging retains both upstream license texts.
+The project license is [LICENSE](../LICENSE).
 
 ## Portable upgrades
 
-Close the launcher and CLI before upgrading. Replace root `missing-report.exe` and `bin/rym-crosscheck.exe` while retaining `data/`, including report, whitelist, settings, and cache. Release archives contain none of those personal files. If extracting into a new installation, use Results’ Load report JSON and Load whitelist to copy validated old files; source files remain untouched. Remembered settings and runtime caches are separate from those imports.
+1. Close the reviewer.
+2. Close the CLI.
+3. Replace root `missing-report.exe`.
+4. Replace `bin/rym-crosscheck.exe`.
+5. Preserve `data/`, including the report, whitelist, settings, and cache.
 
-There is no automatic migration from the former `report/` layout or root whitelist. Load those files explicitly; they are never moved. The old CLI `--output` and `--whitelist` arguments remain removed. Markdown reports are not imported; run a comparison to generate program JSON. Do not publish personal reports, whitelist files, or settings as release assets.
+A new installation can load old report JSON and whitelist files through Results.
+Source files remain unchanged. Settings and caches are separate from imports.
+
+Files do not migrate automatically from the old `report/` structure or root whitelist.
+The reviewer does not import Markdown reports.
+Removed arguments are `--output`, `--whitelist`, `--web-mode`, `--private-browser`, and `--persistent-browser`.

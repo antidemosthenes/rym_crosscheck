@@ -261,7 +261,7 @@ void resolve_browser_access(const std::filesystem::path &path, std::chrono::seco
     } cleanup{job.get()};
     auto executable = edge_path();
     auto command = quote(executable.native()) + L" --user-data-dir=" + quote(profile.native()) +
-                   L" --disable-extensions --no-first-run --no-default-browser-check " +
+                   L" --disable-extensions --no-first-run --no-default-browser-check --new-window " +
                    quote(wide(target));
     auto child = create_quiet_process(executable, std::move(command));
     process = std::move(child.process);
@@ -274,6 +274,9 @@ void resolve_browser_access(const std::filesystem::path &path, std::chrono::seco
         throw Error("Cannot resume the access browser.");
     log("If RYM shows its own restriction form, complete reCAPTCHA, click Submit, "
         "and wait for the chart to appear before continuing. Comments and email are optional.");
+    log("This window opens the requested RYM URL with the saved session. "
+        "If only the normal homepage appears without an access prompt, close the window "
+        "to retry chart retrieval.");
     if (reason == AccessReason::sign_in)
         log("RYM requested sign-in. Sign in manually in this dedicated Edge window and wait for "
             "the chart or your signed-in homepage. Choose Remember me if offered and desired. "
@@ -347,7 +350,7 @@ std::string AccessTransport::fetch(std::string_view url) {
         try {
             check_cancelled();
             return fetch_(url);
-        } catch (const VerificationRequired &) {
+        } catch (const VerificationRequired &error) {
             if (verified)
                 throw Error(
                     "RYM page is still unusable after browser verification: " + std::string(url) +
@@ -355,8 +358,9 @@ std::string AccessTransport::fetch(std::string_view url) {
                     "The previous report is preserved.");
             verified = true;
             check_cancelled();
+            log(error.what());
             recover_(url, AccessReason::verification);
-        } catch (const SignInRequired &) {
+        } catch (const SignInRequired &error) {
             if (signed_in)
                 throw Error("RYM still requests sign-in for " + std::string(url) +
                             ". Complete sign-in before closing Edge; the chart or your signed-in "
@@ -364,6 +368,7 @@ std::string AccessTransport::fetch(std::string_view url) {
                             "The previous report is preserved.");
             signed_in = true;
             check_cancelled();
+            log(error.what());
             recover_(url, AccessReason::sign_in);
         }
     }
@@ -376,12 +381,17 @@ std::string Browser::fetch(std::string_view url) {
     if (auto *failure = navigation.if_contains("errorText");
         failure && !failure->as_string().empty())
         throw Error("Cannot navigate to " + target + ": " + std::string(failure->as_string()));
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    std::string observed_url, observed_ready;
     for (;;) {
         check_cancelled();
         if (std::chrono::steady_clock::now() >= deadline) {
             state.restricted.request_stop();
-            throw VerificationRequired("RYM did not provide a usable hidden page: " + target);
+            throw VerificationRequired(
+                "RYM page did not become usable within 10 seconds. Requested URL: " +
+                target + ". Last page URL: " + (observed_url.empty() ? "unavailable" : observed_url) +
+                ". Document state: " + (observed_ready.empty() ? "unavailable" : observed_ready) +
+                ". Access restrictions, redirects, or changed markup can cause this failure.");
         }
         std::optional<boost::json::object> evaluated;
         try {
@@ -410,6 +420,8 @@ std::string Browser::fetch(std::string_view url) {
             return std::string_view(text.data(), text.size());
         };
         auto current = field("url"), html = field("html"), ready = field("ready");
+        observed_url.assign(current);
+        observed_ready.assign(ready);
         if (current != "about:blank" && !current.starts_with("https://rateyourmusic.com/"))
             throw Error("Browser navigated outside RYM.");
         const auto status = browser_page_state(current, target, ready, html);
@@ -424,7 +436,8 @@ std::string Browser::fetch(std::string_view url) {
             if (!interactive() && !launcher_)
                 throw Error("RYM verification requires an interactive terminal; rerun "
                             "interactively or use --offline.");
-            throw VerificationRequired("RYM needs verification in an ordinary browser session.");
+            throw VerificationRequired("RYM security check detected at " + std::string(current) +
+                                       " while retrieving " + target + ".");
         } else if (status == BrowserPageState::ready) {
             if (html.size() > 16 * 1024 * 1024)
                 throw Error("HTML exceeds 16 MiB.");

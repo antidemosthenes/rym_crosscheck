@@ -129,9 +129,11 @@ int application(const std::vector<std::string> &arguments,
                                              ? "Sign in to RYM in Edge. Once the chart or your "
                                                "signed-in homepage appears, close that Edge "
                                                "window to continue."
-                                             : "Complete the RYM security check in Edge. If shown, "
+                                             : "Complete any RYM security check in Edge. If shown, "
                                                "click Submit after reCAPTCHA. Wait for the chart, "
-                                               "then close Edge to continue."}});
+                                               "then close Edge to continue. If only the normal "
+                                               "homepage appears without an access prompt, close "
+                                               "Edge to retry chart retrieval."}});
                     resolve_browser_access(selected_profile, std::chrono::seconds(verification),
                                            channel != nullptr, url, reason);
                     if (channel)

@@ -13,6 +13,11 @@ struct ReportCandidate {
     Fraction artist, title_score;
     bool credit_gap{};
     bool version_gap{};
+    bool artist_gap{};
+    bool section_gap{};
+    bool compound_gap{};
+    bool annotation_gap{};
+    bool diacritic_gap{};
 };
 struct ReportSong {
     Song song;

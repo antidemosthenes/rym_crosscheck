@@ -87,6 +87,36 @@ void report_review_tests() {
             "Older reports without version-review flags remain readable");
     legacy_candidate["version_gap"] = "true";
     rejects([&] { rym::parse_report(legacy); });
+    legacy_candidate.erase("version_gap");
+    legacy_candidate.erase("artist_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].artist_gap,
+            "Older reports without artist-overlap flags remain readable");
+    legacy_candidate["artist_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
+    legacy_candidate.erase("artist_gap");
+    legacy_candidate.erase("section_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].section_gap,
+            "Older reports without section-review flags remain readable");
+    legacy_candidate["section_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
+    legacy_candidate.erase("section_gap");
+    legacy_candidate.erase("compound_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].compound_gap,
+            "Older reports without compound-title flags remain readable");
+    legacy_candidate["compound_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
+    legacy_candidate.erase("compound_gap");
+    legacy_candidate.erase("annotation_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].annotation_gap,
+            "Older reports without annotation-review flags remain readable");
+    legacy_candidate["annotation_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
+    legacy_candidate.erase("annotation_gap");
+    legacy_candidate.erase("diacritic_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].diacritic_gap,
+            "Older reports without diacritic-review flags remain readable");
+    legacy_candidate["diacritic_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
     for (const auto *field : {"generated", "captured"}) {
         auto future = rym::report_json(report);
         future[field] = 253402300800LL;

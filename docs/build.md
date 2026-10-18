@@ -1,45 +1,61 @@
 # Build guide
 
-This guide covers building the executable. For comparison commands, see the [README](../README.md); for test coverage and execution, see the [testing guide](testing.md).
+[README](../README.md) explains program use. [Testing](testing.md) explains test execution.
 
 ## Requirements
 
-- Windows x64 and MSVC with C++23 support, installed through Visual Studio or Visual Studio Build Tools.
-- Windows SDK with the resource compiler, plus CMake 4+ and Ninja, available on PATH or through Visual Studio's bundled CMake tools.
-- PowerShell and Visual Studio Installer's `vswhere` for the supplied helper.
-- Internet access for the first dependency download. Existing verified archives are reused.
-- An AVX2-capable CPU to run the optimized Release build.
+- Windows x64.
+- MSVC with C++23 support.
+- The Windows SDK and resource compiler.
+- CMake 4 or later, and Ninja.
+- PowerShell and Visual Studio Installer's `vswhere` for the helper.
+- Internet access for missing dependency archives.
+- An AVX2 CPU for Release executables.
 
-Live comparisons also require a current Microsoft Edge version supporting hidden browser targets. The native reviewer requires the WebView2 Evergreen Runtime, detected at launch; the CLI and offline core tests can run without it. Building downloads the pinned WebView2 SDK and statically links its loader; no Node or frontend build tools are required.
+The helper finds the x64 Visual Studio tools and bundled CMake/Ninja.
+Direct commands require an x64 developer terminal with these tools on PATH.
+
+The helper initializes Visual Studio with a short temporary `PATH` to avoid CMD's expanded-line limit.
+It adds the original search paths for build commands and removes duplicate paths.
+It restores the terminal's environment after success or failure. Repeated calls do not accumulate developer environment settings.
+
+Builds require no vcpkg, Node, frontend framework, or local HTTP server.
+The SDK supplies a static WebView2 loader. [Runtime requirements](../README.md#quick-start) apply when the programs run.
 
 ## Configure, build, and test
 
-Run these commands from the project folder. The helper discovers an installed C++ toolchain, initializes its x64 environment, and locates CMake and Ninja:
+**Helper actions `configure` and `all` remove everything under `build/` except `build/downloads/`.**
+This removal includes other presets, archives, and portable runtime data.
+
+1. Close executables from the build directories.
+2. Copy required personal data outside `build/`.
+3. Run the selected helper action from the repository root.
 
 ```powershell
 ./scripts/build.ps1 -Action all -Preset release
 ```
 
-Use `-Preset debug` for a Debug build. Release enables optimization and supported link-time optimization; Debug provides debugging information and additional allocation checks in the tests.
+| Action | Behavior |
+| --- | --- |
+| `configure` | Remove outputs. Generate new build files. |
+| `build` | Build enabled targets. Keep existing outputs. |
+| `test` | Run CTest without a build. |
+| `all` | Remove outputs. Configure and build. Run CTest. |
 
-| Helper option | Default | Behavior |
-| --- | --- | --- |
-| `-Preset NAME` | `release` | Choose `release` or `debug`, each with its own build directory. |
-| `-Action configure` | — | Clear `build/` except `downloads/`, then generate build files; does not compile or run tests. |
-| `-Action build` | — | Build enabled targets in an already configured directory; does not run tests. |
-| `-Action test` | — | Run CTest against already built executables; does not build them. |
-| `-Action all` | `all` | Clear `build/` except `downloads/`, configure, build, then run CTest. |
-| `-BuildTests ON\|OFF` | `ON` | Explicitly set test compilation during `configure` or `all`. Use `OFF` with `configure`, then `build`; `all` runs CTest and rejects explicit `OFF`. |
+The default action is `all`. `-Preset` accepts `release` or `debug`. The default is `release`.
+Release enables optimization and supported link-time optimization. Debug enables debug information and allocation checks in tests.
 
-The helper starts a fresh build for `configure` and `all`: it removes all contents of `build/` except `build/downloads/`, including other presets, old release archives, logs, and runtime data inside portable builds. Copy any report, whitelist, or settings you want to keep outside `build/` first, and close programs running from that directory. Cleanup failures stop the build. The separate `build` and `test` actions do not clean; they use the prepared configuration. The GitHub workflow uses `configure -BuildTests OFF` followed by `build`, retaining its restored download archives and test-disabled configuration.
+`-BuildTests ON|OFF` applies only to `configure` or `all`.
+The helper rejects explicit `OFF` with `all`, because `all` runs CTest.
 
-For example, after configuring, build without running tests:
+These commands reuse an existing configuration:
 
 ```powershell
 ./scripts/build.ps1 -Action build -Preset release
+./scripts/build.ps1 -Action test -Preset release
 ```
 
-Alternatively, use an **x64 Visual Studio developer terminal** with CMake and Ninja on PATH:
+Direct CMake commands preserve other build directories:
 
 ```powershell
 cmake --preset release
@@ -47,70 +63,76 @@ cmake --build --preset release --parallel 8
 ctest --preset release
 ```
 
-Replace `release` with `debug` in each command for Debug. Configuration prepares the build, building compiles enabled targets, and CTest executes registered tests. Each preset writes a portable installation under `build/<preset>/portable/`: `missing-report.exe` at its root and `bin/rym-crosscheck.exe` beneath it. Runtime files are created in its `data/` directory. Keep this layout together when copying a build.
+Use `debug` in place of `release` for Debug. Each preset produces this structure:
 
-## What does `--parallel 8` mean?
+```text
+build/<preset>/portable/missing-report.exe
+build/<preset>/portable/bin/rym-crosscheck.exe
+```
 
-`--parallel 8` allows the build tool to schedule up to eight concurrent build jobs. It does not select eight tests or set the application's `--local-workers` or `--web-workers`. See the [CMake build command reference](https://cmake.org/cmake/help/latest/manual/cmake.1.html#build-a-project).
+Runtime files use the portable installation's `data/` folder.
 
-More parallel jobs can reduce build time when CPU and memory are available; fewer jobs reduce peak resource use. Use `--parallel 4` for fewer jobs or `--parallel 1` for a sequential build. Dependency sub-builds and compiler/linker threads can add processes, so this is not a limit on the total operating-system process count. The helper currently passes `--parallel 8`; use the manual commands to choose another value.
+## Build parallelism
 
-## Are tests built by default?
+`--parallel 8` permits up to eight concurrent build jobs. More jobs can shorten the build but increase CPU and memory use.
+`--parallel 4` or `--parallel 1` reduces this load. The helper uses eight jobs.
 
-**Yes.** `RYM_BUILD_TESTS` defaults to `ON` on a fresh configuration. A normal Release or Debug build includes:
-
-- `rym-crosscheck`: the comparison CLI.
-- `missing-report`: the native reviewer, built even when tests are disabled.
-- `rym-tests`: correctness and lifecycle checks.
-- `rym-browser-visibility`: an optional live browser UI regression check.
-
-Building these executables does not run them. CTest runs the registered correctness and CLI-help checks; the browser-visibility executable is invoked separately. The helper's `all` action runs CTest after building, while `build` does not. Upstream dependency tests are disabled independently of the project's test option.
+Build jobs do not change application workers or select tests.
+Dependency builds and compiler/linker threads can create additional processes.
+The [CMake reference](https://cmake.org/cmake/help/latest/manual/cmake.1.html#build-a-project) describes this option.
 
 ## Build without tests
 
-From the developer terminal, disable project test targets at configuration time, then build:
+`RYM_BUILD_TESTS` defaults to `ON`.
+Ordinary Release and Debug builds include both applications, `rym-tests`, and `rym-browser-visibility`.
+
+A build does not run the tests. CTest runs correctness and CLI-help checks.
+The live browser check runs separately.
+
+From an x64 developer terminal:
 
 ```powershell
 cmake --preset release -DRYM_BUILD_TESTS=OFF
 cmake --build --preset release --parallel 8
 ```
 
-Skip CTest when tests are disabled. The equivalent helper commands are:
+The helper equivalent is:
 
 ```powershell
 ./scripts/build.ps1 -Action configure -Preset release -BuildTests OFF
 ./scripts/build.ps1 -Action build -Preset release
 ```
 
-`-Action build` alone does not disable test compilation. The GitHub [release workflow](releases.md) explicitly disables test builds, while ordinary fresh local configurations retain the default `ON`.
+Both applications still build. If test targets are absent, skip CTest.
+CMake disables upstream dependency tests independently.
 
-With direct CMake commands, the option persists in that configuration's CMake cache until you change it. Release and Debug use separate caches, so configure each independently. Disabling tests with direct CMake commands does not remove previously generated test executables or test metadata; their presence does not mean they were rebuilt. The helper's `configure` and `all` actions remove all previous configurations first, so pass `-BuildTests OFF` each time you start a fresh application-only configuration.
+Direct CMake settings persist in that build directory. `-DRYM_BUILD_TESTS=ON` restores test targets.
+Disabling tests does not remove old test binaries or metadata.
 
-To restore test targets and run the checks:
+Helper configuration removes prior settings. Each new application-only helper configuration requires `-BuildTests OFF`.
 
-```powershell
-cmake --preset release -DRYM_BUILD_TESTS=ON
-cmake --build --preset release --parallel 8
-ctest --preset release
-```
-
-For a fresh application-only build directory, without existing test artifacts:
+A separate application-only directory uses:
 
 ```powershell
 cmake --preset release -B build/app-only -DRYM_BUILD_TESTS=OFF
 cmake --build build/app-only --parallel 8
 ```
 
-This writes the launcher to `build/app-only/portable/missing-report.exe` and the CLI to `build/app-only/portable/bin/rym-crosscheck.exe`.
+Do not use helper `configure` or `all` during isolated checks. These actions also remove custom directories under `build/`.
 
-For isolated validation that preserves an existing portable installation, use direct CMake commands with a separate binary directory as above. Do not invoke the helper's `configure` or `all` actions during that validation: they clear the entire shared `build/` tree, including custom binary directories.
+## Dependencies and downloads
 
-## Dependencies and generated files
+Pinned archives use SHA-256 checks and TLS verification. Dependencies use static libraries and consistent MSVC runtime settings.
+[Dependencies.cmake](https://github.com/antidemosthenes/rym_crosscheck/blob/main/cmake/Dependencies.cmake) defines versions and hashes.
+[ArchiveCache.cmake](https://github.com/antidemosthenes/rym_crosscheck/blob/main/cmake/ArchiveCache.cmake) supplies the shared archive cache.
 
-Dependencies are downloaded from pinned upstream archives, verified with SHA-256 and TLS verification, and built as static libraries with consistent MSVC runtime settings. No vcpkg installation is needed. Downloads remain under `build/downloads`; generated dependencies, binaries, and build logs stay under the Git-ignored `build` directory.
+Verified archives remain in `build/downloads/`. Their names include hashes.
+Existing valid archives require no server contact. Only missing archives require downloads.
+The cache also checks legacy archive locations.
 
-All nine dependencies share that archive cache across build configurations. Archive names contain the pinned SHA-256, so different versions can coexist. A matching existing archive is verified and reused without contacting its download server. Archives from the previous cache layout are also reused when their hashes match. Only missing pinned archives are downloaded. A corrupted archive in the current layout fails verification; remove the named file and configure again to replace it.
+A corrupt current archive stops configuration. Remove the named archive before another configuration.
 
-The helper's `build` action and direct incremental CMake builds reuse extracted sources and compiled dependencies. Direct CMake reconfiguration with unchanged dependency settings does not repeat extraction. The helper's `configure` and `all` actions clear those generated files, so dependencies must be extracted and compiled again; retained verified archives avoid network downloads. Only missing archives are downloaded. Keep `build/downloads` when manually removing configuration directories such as `build/release` or `build/debug`.
+Incremental builds reuse extracted sources and compiled dependencies.
+Direct reconfiguration preserves unchanged dependencies. Fresh helper configuration repeats extraction and compilation, but keeps downloads.
 
-Dependency downloads are separate from the application's runtime cache. See [runtime storage and cleanup](runtime.md) for that distinction, [architecture](architecture.md) for implementation details, and [releases](releases.md) for packaging the Release executable.
+Git ignores build files and downloads. Dependency downloads are separate from the [application cache](runtime.md#application-cache).

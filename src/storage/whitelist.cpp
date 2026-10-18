@@ -81,9 +81,9 @@ Whitelist::Whitelist(std::vector<WhitelistEntry> entries) {
             entry.key = "url:" + entry.url;
             inserted = urls_.insert(entry.url).second;
         } else {
-            auto normalized = identity(entry.title, entry.artists);
-            entry.key = "identity:" + normalized.key;
-            inserted = identities_.insert(std::move(normalized.key)).second;
+            auto key = identity_key(entry.title, entry.artists);
+            entry.key = "identity:" + key;
+            inserted = identities_.insert(std::move(key)).second;
         }
         if (inserted)
             entries_.push_back(std::move(entry));
@@ -112,7 +112,7 @@ std::string Whitelist::toml() const {
 }
 bool Whitelist::contains(const Song &song) const {
     return urls_.contains(song.url) ||
-           (!identities_.empty() && identities_.contains(identity(song.title, song.artists).key));
+           (!identities_.empty() && identities_.contains(identity_key(song.title, song.artists)));
 }
 bool Whitelist::contains(const Song &song, const Identity &normalized) const {
     return urls_.contains(song.url) || identities_.contains(normalized.key);

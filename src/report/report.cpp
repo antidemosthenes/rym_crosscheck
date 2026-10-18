@@ -85,7 +85,9 @@ Report compare_library(const Snapshot &snapshot, const Scan &scan,
                 relative_path(display);
                 row.candidates.push_back({track.title, track.artists, std::move(display),
                                           candidate.artist, candidate.title, candidate.credit_gap,
-                                          candidate.version_gap});
+                                          candidate.version_gap, candidate.artist_gap,
+                                          candidate.section_gap, candidate.compound_gap,
+                                          candidate.annotation_gap, candidate.diacritic_gap});
             }
         }
         result.songs.push_back(std::move(row));
@@ -116,7 +118,12 @@ boost::json::object report_fields(const Report &report) {
                                     {"artist", score(candidate.artist)},
                                     {"title_score", score(candidate.title_score)},
                                     {"credit_gap", candidate.credit_gap},
-                                    {"version_gap", candidate.version_gap}});
+                                    {"version_gap", candidate.version_gap},
+                                    {"artist_gap", candidate.artist_gap},
+                                    {"section_gap", candidate.section_gap},
+                                    {"compound_gap", candidate.compound_gap},
+                                    {"annotation_gap", candidate.annotation_gap},
+                                    {"diacritic_gap", candidate.diacritic_gap}});
         songs.emplace_back(boost::json::object{{"rank", row.song.rank},
                                                {"title", row.song.title},
                                                {"artists", strings(row.song.artists)},
@@ -189,6 +196,16 @@ Report parse_report(const boost::json::value &json) {
                                   candidate.at("credit_gap").as_bool()};
             if (const auto *gap = candidate.if_contains("version_gap"))
                 match.version_gap = gap->as_bool();
+            if (const auto *gap = candidate.if_contains("artist_gap"))
+                match.artist_gap = gap->as_bool();
+            if (const auto *gap = candidate.if_contains("section_gap"))
+                match.section_gap = gap->as_bool();
+            if (const auto *gap = candidate.if_contains("compound_gap"))
+                match.compound_gap = gap->as_bool();
+            if (const auto *gap = candidate.if_contains("annotation_gap"))
+                match.annotation_gap = gap->as_bool();
+            if (const auto *gap = candidate.if_contains("diacritic_gap"))
+                match.diacritic_gap = gap->as_bool();
             identity(match.title, match.artists);
             relative_path(match.path);
             record.candidates.push_back(std::move(match));

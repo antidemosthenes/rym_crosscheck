@@ -1,85 +1,248 @@
 # Architecture
 
-For CLI usage and report interpretation, see the [README](../README.md). Build commands, cache administration, and test execution are documented in the [build](build.md), [runtime](runtime.md), and [testing](testing.md) guides.
+[README](../README.md) explains program use. [Runtime](runtime.md) explains storage and access recovery.
 
-`domain` owns song, track, candidate, and snapshot records plus cancellation and Windows handle wrappers. `library` reads tags through a bounded worker queue. `rym` owns browser retrieval and DOM parsing. `matching` owns immutable exact and fuzzy indexes. `storage` owns cache, whitelist, file locks, and atomic writes. `report` owns the versioned JSON comparison model, portable paths, and whitelist update store. `reviewer` hosts the embedded interface in Win32/WebView2. `cli` coordinates these modules.
+## Subsystems
 
-## Matching guarantees
+Headers are under `include/rym_crosscheck/`. Sources follow the same groups under `src/`.
 
-Normalize once and decode to Unicode code points. Exact identity contains the title, sorted complete artist list, and an explicit recording qualifier. Do not infer collaborations by splitting punctuation in an artist name. A title such as “Live Forever” has no recording qualifier.
+| Group | Responsibility |
+| --- | --- |
+| `domain` | Own records, cancellation state, and Windows resources. |
+| `library` | Scan files, read tags, and manage the worker queue. |
+| `matching` | Normalize metadata, build indexes, and rank candidates. |
+| `rym` | Manage Edge, access recovery, chart parsing, and album retrieval. |
+| `storage` | Manage caches, whitelist entries, locks, and atomic writes. |
+| `report` | Manage JSON reports, installation paths, imports, and saves. |
+| `cli` | Check options, run comparisons, and communicate with the reviewer. |
+| `reviewer` | Host the embedded interface in Win32 and WebView2. |
 
-Title normalization removes presentation-only outer quotation marks, slash-adjacent spacing, explicit remaster suffixes, and trailing `Including 'quoted section'` annotations on both sources. It preserves accents, other punctuation, and ordinary parenthesized sections. Slicing uses views into the owning normalized string; code points are regenerated only when title cleanup changes it. Artist names do not receive title-specific cleanup. Albums never participate in exact identity, candidate eligibility, scores, or ranking.
+Boost supplies flat maps, flat sets, JSON, and candidate storage. The project uses C++23.
 
-Explicit single/album version suffixes are separated from their base titles and retained in exact keys, so different versions remain distinct editions and whitelist identities. Differing single/album/unqualified labels allow a review suggestion using base-title similarity, marked `Version differs`; they never prove ownership. Any additional live/remix/demo qualifier still blocks this relaxation. Within a credit-match category, same-version suggestions precede differing-version suggestions; existing score and deterministic tie-break rules then apply. Candidate JSON adds an optional `version_gap` flag within schema 1; older reports default it to false. Raw tag and chart caches remain compatible because identities are rebuilt for each comparison. Existing saved ownership results change only after another comparison.
+## Matching terms
 
-For code-point lengths `m,n`, similarity threshold `a/b`, and unit-cost Levenshtein distance `d`, eligibility is `d <= floor((b-a)*max(m,n)/b)`. Candidate lengths lie between `ceil(a*m/b)` and `floor(b*m/a)` when `a > 0`.
+| Term | Meaning |
+| --- | --- |
+| Identity | Normalized title, complete artists, recording version, and included sections. |
+| Principal artist | The first artist in a recorded artist list, before sorting. |
+| Base title | A comparison copy after removal of balanced annotations. |
+| Component | One complete part of a title with slash separators. |
+| Review spelling | A comparison copy after removal of Latin diacritics. |
+| Candidate | A local recording that qualifies as a review suggestion. |
 
-For trigrams, count occurrences rather than only distinct grams. Shared occurrence count must be at least `max(max(m-2,0),max(n-2,0)) - 3*k`, where `k` is the allowed distance. Each edit destroys at most three original trigram occurrences. If this bound cannot prune, scan the length-compatible bucket. Zero thresholds and short strings use safe fallbacks.
+## Matching algorithm
 
-Threshold decisions and candidate ordering use integer/rational arithmetic. Dense postings select a length-only fallback; this changes execution cost without excluding qualifying candidates. Distance scoring trims equal prefixes/suffixes, reuses thread-local scratch buffers, and rejects candidates once the edit limit is impossible. The exhaustive test path skips retrieval filters, providing an oracle for candidate recall and ranking. An independent dynamic-programming oracle also checks the bounded distance implementation.
+```text
+metadata → shared normalization → identity
+                                  ├─ exact hash lookup → Owned
+                                  └─ candidate indexes → eligibility → scoring → best three
+```
 
-When no credited artist qualifies, ordinary title retrieval is skipped; exact-principal credit-mismatch candidates are still evaluated. This avoids unnecessary title-index work without changing eligibility or top-three ordering.
+Exact ownership and review matching share one identity builder. `identity_key` omits review preparation.
+`identity` also prepares full credits and annotation evidence. Both functions produce the same exact key.
+Artist/title whitelist entries use this key.
+
+Exact ownership requires identity equality. Ordinary fuzzy matching requires qualifying artist and title scores.
+Review exceptions admit specific differences. Review exceptions never establish ownership.
+
+### Normalization and exact keys
+
+| Field | Common normalization | Additional handling |
+| --- | --- | --- |
+| Title | Unicode, case, whitespace, typographic punctuation. | Normalize outer quotes, slash spacing, and explicit remasters. |
+| Artists | Unicode, case, whitespace, typographic punctuation. | Keep complete names. Sort structured credits. Remove duplicate identical names. |
+
+Artists with punctuation remain complete names. Quote removal keeps title words and internal apostrophes.
+Accents remain significant in exact keys. Albums have no role in ownership or candidate eligibility.
+
+Recognized trailing edition labels remain in the version field. Examples include single, album, extended, and radio edit.
+Recognized recording labels include live, remix, acoustic, instrumental, and demo. Ordinary words such as “Live” do not establish a recording label.
+
+Included-section parsing separates names from the scoring title. Exact keys retain the ordered section names.
+Equivalent quotes and list separators can match exactly. Missing or different section names require review.
+Malformed section lists remain title text.
+
+Length-prefixed key fields prevent delimiter ambiguity. Duplicate identities share one candidate.
+Each duplicate group keeps every recorded principal and annotation source. The smallest native path selects the representative recording.
+
+### Review exceptions
+
+| Evidence | Required condition |
+| --- | --- |
+| Credit mismatch | Equal recorded principal artists and qualifying title similarity. Complete credits must differ. |
+| Artist overlap | Equal base titles and a contained artist phrase with two meaningful words. |
+| Edition or section difference | Eligible artists and qualifying base-title similarity. Protected recording evidence must remain compatible. |
+| Annotation difference | Equal complete, nonempty bases after balanced block removal. Artists must remain eligible. |
+| Component difference | One complete title equals a complete slash component. Artists must qualify or share a recorded principal. |
+| Diacritic difference | Equal complete canonical titles or equal complete credits after Latin accent removal. Recording checks remain active. |
+
+Annotation extraction removes balanced `(...)` and `[...]` blocks from a separate copy.
+Nested blocks and unknown labels are valid. Malformed pairs invalidate the entire extraction.
+Empty bases cannot qualify. Original metadata remains available.
+
+The component parser handles canonical titles and extracted bases. Annotation removal precedes segmentation of the extracted form.
+Outer component quotes keep their words. Components require at least three code points and one letter.
+
+Empty components and unbalanced brackets invalidate the split. Slashes inside parentheses do not split the canonical title.
+Internal substrings alone cannot qualify.
+
+Equal complete extracted bases can expose incompatible recording labels for review. Component equality alone cannot override those recording checks.
+
+Artist overlap is symmetric. Leading English articles do not count in this path.
+Space and slash boundaries prevent partial-word matches. Word pairs do not span slashes.
+At least two meaningful words must occur within one slash component. This rule does not infer arbitrary artist aliases.
+
+Latin spelling uses canonical decomposition through utf8proc. Accented Latin letters become ASCII bases.
+The spelling also removes combining diacritics after Latin letters. Other scripts and variation selectors stay intact.
+Letters without this decomposition stay intact.
+
+Complete credits undergo spelling conversion separately for each artist. The matcher sorts the converted list again.
+Names that collide after conversion remain separate entries. No accent conversion changes ownership or whitelist identities.
+
+### Candidate retrieval
+
+The matcher qualifies full artist credits first. Latin credit equality can also admit an artist for review.
+A small eligible pool uses the corresponding track IDs. The current limit is one quarter of the library.
+Larger pools use the global title index. Both paths preserve eligible candidates.
+
+The global indexes use code-point lengths and trigram occurrence counts. A trigram contains three consecutive code points.
+For threshold `a/b > 0`, lengths satisfy:
+
+```text
+ceil(a*m/b) <= n <= floor(b*m/a)
+k = floor((b-a) * max(m,n) / b)
+```
+
+Here `m` and `n` are the two lengths. The required shared trigram count is:
+
+```text
+max(max(m-2,0), max(n-2,0)) - 3*k
+```
+
+An edit can destroy at most three trigrams. Short strings, dense postings, and nonpositive overlap bounds use length-compatible scans.
+Threshold zero has no finite upper length bound.
+
+Separate sparse indexes store annotation bases, title components, artist word pairs, and changed Latin spellings.
+Component postings retain full-form lengths and annotation flags. Reverse queries use existing canonical indexes.
+The matcher prepares query forms once. Candidate scoring does not parse local components again.
+
+Component parsing uses inline Boost storage for the usual two components. Bracket stacks also use inline storage.
+Both containers grow when necessary. Inline capacity does not limit valid components or nesting.
+
+### Scoring and ranking
+
+Ordinary similarity uses unit-cost Levenshtein distance:
+
+```text
+similarity = 1 - distance / max(m,n)
+```
+
+Integer fractions preserve threshold boundaries. Distance scoring removes shared prefixes and suffixes first.
+It rejects impossible lengths and stops when the edit limit fails. Worker-local row buffers avoid repeated allocation.
+
+Equal complete extracted bases score 100%. Complete component relations use the shorter length divided by the longer length.
+This ratio compares the selected complete forms, including extra components. These paths require no distance matrix.
+
+Diacritic candidates keep actual normalized-text scores. An upper edit bound counts unequal aligned characters and the length difference.
+A bounded distance pass then computes the exact score. Long strings with a few accents avoid a full-width pass.
+
+Candidate retrieval has no count limit before scoring. Ranking prefers candidates without these flags, in this order:
+
+1. Artist overlap.
+2. Credit mismatch.
+3. Diacritic difference.
+4. Annotation difference.
+5. Version difference.
+6. Section difference.
+7. Component difference.
+
+Ties use mean artist/title similarity, artist similarity, title, and native path.
+Native x64 wide products compare rational means without overflow.
+
+The result holds three candidates in `boost::container::static_vector<Candidate, 3>`.
+A length bound can reject candidates that cannot improve the current result.
+A binary search can tighten the distance limit. These checks include flags, scores, and deterministic ties.
+They do not change eligibility or final scores.
+
+Exhaustive scoring omits retrieval and ranking shortcuts. It checks local spellings and components independently.
+A separate dynamic-programming oracle checks edit distances. The two checks test retrieval completeness and scoring correctness.
 
 ## Ownership and concurrency
 
-Records own their strings and paths. Index keys own their storage; postings contain numeric IDs. Build all indexes before concurrent reads. Views remain within the owner's lifetime and are not stored across asynchronous boundaries or flat-map rehashes.
+Records own strings and paths. Indexes own keys and store numeric IDs.
+Index construction finishes before parallel reads. Views stay within their owners' lifetimes.
+Views do not point into flat-map elements across rehashes.
 
-Boost.JSON parsing resources are local to a command; returned records are copied into independently owned storage before the resource is destroyed. The top-three static vector is never temporarily overfilled.
+Full-credit text and code points exist once per distinct credit. Exact keys move into the hash map.
+Ordinary records omit sparse review data. The source track vector must outlive its index.
 
-Local scanning uses bounded queues and joined workers. Album enrichment defaults to four workers and caps the pool at eight or the number of jobs, whichever is smaller. Workers share page-navigation pacing; browser commands are serialized over the CDP socket while page loading can overlap in separate hidden targets. A detected security gate requests a shared stop token, preventing queued paced navigations from continuing. This pool limit does not cap every browser asset request or represent a published server quota.
+Local tag readers use a bounded queue and joined workers. Scanning overlaps chart retrieval.
+Album workers share pacing and cancellation. A restriction stops queued album requests.
 
-Headless retrieval targets use `hidden: true, background: true` and never activate a window. A blank bootstrap page initializes Edge before hidden targets are created. Retrieval keeps the browser user agent consistent with ordinary verification so cookies remain usable. Security verification and manual RYM sign-in create visible UI in ordinary Edge, which closes before further retrieval. Both phases use the same persistent profile; cookies remain inside Edge across runs. Chart acquisition retries only the affected URL, allowing at most one security-check handoff and one sign-in handoff per page. Ordinary navigation errors do not trigger a handoff.
+Resource Acquisition Is Initialization (RAII) wrappers and smart pointers own handles, files, sockets, processes, and buffers.
+Nonthrowing accessors, arithmetic, callbacks, and moves use `noexcept`. Allocation, parsing, I/O, and cancellable scoring can throw.
 
-Both browser launches redirect standard streams to the Windows null device using an explicit inherited-handle list. Browser diagnostics do not enter the CLI terminal, and unrelated inheritable handles are excluded. Process/thread handles and launch attributes use RAII; suspended launches still join the owning Windows job before execution. Application warnings and browser-connection failures remain visible.
+## Browser transport
 
-Browser response objects transfer ownership from the parsed CDP reply instead of deep-copying HTML-bearing results. URL/readiness/HTML views stay inside that reply's lifetime; only returned page content becomes a retained owning string. Polling and challenge classification remain unchanged.
+A dedicated persistent Edge profile serves invisible retrieval and visible access recovery.
+The access window closes before retrieval continues. Extensions remain disabled.
 
-The local CDP connection uses asynchronous WinHTTP operations behind a blocking worker-thread interface. Connections reuse one process-wide session, avoiding repeated session setup and the event-handle growth observed with per-connection sessions. Callback contexts own their buffers until the final handle-closing notification, including after cancellation. Session teardown waits for WinHTTP's unload notification before releasing its notification event. Event waits check cancellation and one deadline shared across command send, fragments, and unrelated events; asynchronous traffic cannot restart that deadline. Normal commands allow 15 seconds and cleanup commands 2 seconds. No unsupported receive-timeout option is applied to the upgraded WebSocket handle. The GUI thread never performs these waits.
+The local Chrome DevTools Protocol (CDP) transport uses asynchronous WinHTTP with a blocking worker interface.
+Connections share a process-wide session. Callback contexts keep buffers until handle closure.
+Session cleanup waits for the unload notification.
 
-Non-throwing arithmetic, callbacks, accessors, and resource moves declare `noexcept`; owning records also retain their implicit non-throwing moves. Candidate tie-breaking compares native paths without allocating temporary UTF-8 strings. Allocation, parsing, I/O, synchronization, and cancellable scoring remain throwable. Destructors contain fallible cleanup rather than exposing exceptions across teardown or C callback boundaries.
+Each command has one deadline across fragments and unrelated events. The normal deadline is 15 seconds.
+Cleanup commands use 2 seconds. Event waits check cancellation.
 
-## Failure and cleanup
+JSON results keep their resource owners. Results move from replies.
+HTML views stay within each reply's lifetime. Browser streams use the Windows null device and explicit inherited handles.
 
-Chart acquisition validates rank completeness and song identity before matching. Album enrichment is independent of ownership eligibility. Unresolved local files remain scan warnings rather than silently entering the ownership index.
+## Report store
 
-File locks serialize cache/profile ownership. Writes use sibling temporary files, flushing, and atomic replacement. RAII removes temporary writes and owns handles, sockets, subprocess jobs, and worker lifetimes. Cache pruning touches only application-owned filenames. Forced process termination can leave stale temporary files; cache startup removes its stale temporary writes.
+Schema-1 JSON keeps all chart entries, ownership, original metadata, candidate values, warnings, counts, and whitelist data.
+Excluded chart entries remain available for later whitelist removal.
 
-Browser-assisted access is validated against RYM chart and song markup through reduced regression fixtures; upstream changes may require parser updates.
+Optional candidate flags are `version_gap`, `artist_gap`, `section_gap`, `compound_gap`, `annotation_gap`, and `diacritic_gap`.
+Older reports default missing flags to false. Raw caches remain compatible because each run rebuilds identities.
+Saved ownership decisions require another comparison to change.
 
-## Portable report store
+An installation lock serializes updates. Comparison publication reads the current whitelist again.
+Save replaces the complete proposed whitelist. It does not merge external entries.
+Canonical exclusion identities determine differences. Comments, formatting, and order do not count.
 
-Both executables resolve the root viewer, `bin/` CLI, and installation-relative `data/` directory. Shared comparison options provide defaults, validation, normalized absolute GUI paths, and shell-free Windows argument quoting. Explicit CLI path arguments retain working-directory-relative interpretation. The CLI creates a fresh generation with every chart song, exact-ownership flags, owning candidate display records, scan context, and a whitelist snapshot. Suppressed rows allow exclusion removal without another scan. Candidate records contain relative paths and scores, never in-memory IDs. Reports use validated schema version 1. No legacy files are moved or adopted automatically.
+The whitelist commits first. Report refresh reads the latest generation.
+A refresh failure reports partial success without reversing the whitelist write.
+Imports use a worker for checks and require a user decision. Imports copy sources.
+JSON imports keep the active TOML whitelist and receive a new local generation.
 
-Report imports and offline snapshots validate their chart source and timestamp range before use. Cached strings retain their full lengths and reject embedded nulls and invalid Unicode rather than silently truncating metadata. An unreadable loaded whitelist cannot form an authoritative replacement; editing is disabled until valid TOML is loaded, while navigation and recovery remain available.
+## Reviewer and launcher
 
-Whitelist entries retain canonical URL or normalized complete-artist/title identities. Additions use song URLs; removals target canonical entry keys. The loaded view plus staged changes forms the authoritative proposed set. Background departure checks compare canonical keys with current disk entries, ignoring comments, order, and formatting. Replace writes exactly the proposed set; Discard preserves disk; Cancel retains editing state. Saves do not merge unseen external edits. A short installation-specific mutex serializes reads, publication, and atomic updates; a separate CLI-owned run mutex rejects overlapping comparisons before cache clearing or writes. GUI updates also respect the run lock.
+One WebView2 instance runs in a single-threaded apartment (STA). It hosts one embedded shell.
+Screens change without navigation reloads.
+Results parsing starts only when necessary. Tables contain 100 rows per page.
+Collapsed sections delay creation of Document Object Model (DOM) nodes.
 
-The whitelist is committed first by atomic replacement. Report refresh follows independently and reads the latest active generation, so an older loaded document cannot replace a newer comparison. Refresh failure reports partial success without rollback. Comparison publication re-reads the whitelist under the store lock. File imports validate on a worker and require explicit replacement; JSON imports receive a new local generation and retain active TOML authority. Sources are copied, never moved. Imported reports do not become offline chart snapshots.
+Filtering caches normalized search text. Selection changes update existing controls.
+Native work runs on a joined worker. The graphical user interface (GUI) thread owns dialogs and Component Object Model (COM) operations.
+Weak callback references and modal guards protect closure.
 
-## Native reviewer
+Metadata uses text nodes. Native code checks selections and RYM links.
+External links open in the normal browser. The reviewer makes no RYM requests.
 
-The GUI target uses a Win32 STA message loop, WRL COM pointers, and the static WebView2 loader. Only the small compiled UI shell is passed through `NavigateToString`; comparison data uses Boost.JSON and WebView2 messaging, avoiding the shell API’s 2 MiB limit for report data. The initial internal data navigation is allowed; other navigations and new windows are blocked. Metadata is rendered with DOM text nodes. Native actions validate selections and resolve song links against loaded records before opening them externally.
+Prepared UTF-16 messages leave memory after delivery. The report model remains available for saves.
+Minimized windows disable WebView2 visibility and request lower memory use.
+Report memory grows with record count. WebView2 has separate runtime costs.
 
-One WebView2 instance hosts one embedded shell. Home, options, Running, Results, and failure screens switch locally without navigation or additional controls. Report parsing and table creation are deferred until Results. The interface uses 100-row pages and independent searches. Bulk actions cover all filtered records; selections use stable URL/entry keys across pages and filters. Validation, difference checks, display-model construction, JSON serialization, and UTF-16 conversion run on a joined worker. The GUI thread owns native dialogs and WebView2 operations and posts prepared messages. Callbacks use weak lifetime references; controller closure and COM release occur during teardown.
+The reviewer starts the fixed CLI with absolute paths and `--no-open`. It uses no shell or terminal.
+Only selected handles pass to the child. A private, versioned channel carries progress.
+Human diagnostics use a separate buffer with a 256 KiB limit.
 
-The prepared UTF-16 message buffer is released after delivery instead of being retained alongside the native report model and JavaScript data. The native owning model remains available for authoritative saves and link validation. Incomplete-scan warning details defer file-list DOM creation until expanded; their prominent summary remains visible immediately.
+A worker supervises the child. Progress updates occur at most four times per second.
+Elapsed time updates once per second. Cumulative counters keep chart and local counts during access recovery.
 
-Persistent sidebar navigation uses the same native departure guard as the overview actions. Active navigation and keyboard focus follow the current screen, and navigation is disabled during a comparison. The embedded interface uses system fonts, inline icons, static CSS artwork, and short screen transitions with reduced-motion, transparency, contrast, and dark-mode accommodations; no artwork, fonts, or scripts are fetched. Summary counts are computed when a report is accepted, while selection changes continue to update existing rows.
+The suspended child enters an owned Job Object before execution. The Job Object removes comparison children after unexpected reviewer termination.
+Cancellation uses an inherited event. Stop and close waits for cleanup.
+Only a checked launcher channel permits hidden-run access prompts.
 
-Search text is normalized once per loaded report; filtered rows are cached and search rendering is coalesced to animation frames. Selection and busy-state changes update existing controls without rebuilding tables. The collapsed whitelist defers row creation until expanded. Selection state is sent with actions that need it; no separate dirty-state notifications are required. Native errors carry the current busy state so a notice cannot unlock controls during file I/O. Store revisions recorded under the shared lock prevent reloading the reviewer's own writes while still detecting later comparisons. Minimized windows mark WebView2 invisible and request its lower memory target when supported; restoring the window restores the normal target.
-
-Native confirmations and file/folder pickers share a modal guard. Repeated-launch Results requests are deferred until the modal closes rather than navigating behind it. CLI completion notifications are also deferred during modal interactions.
-
-The report model and search strings remain in memory, so data memory grows with chart and whitelist size even though table rendering is paginated. WebView2 also carries its browser-engine process and memory overhead; the absence of a frontend framework does not eliminate that cost. See Microsoft's [WebView2 performance guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/performance).
-
-A named instance mutex and installation-specific window class reuse one maximized window. Report-change notices never reset the displayed whitelist or selections. Whitelist files are read on Results entry and departure checks rather than continuously polled. The viewer uses a separate WebView2 profile under LocalAppData, never the verification profile. It does not implement comparison algorithms, contact RYM, run an HTTP server, or require frontend dependencies.
-
-## Hidden CLI supervision
-
-The viewer starts the fixed CLI with `CreateProcessW`, normalized absolute paths, and `--no-open`, without a shell or terminal. An explicit inherited-handle list shares only null stdin, diagnostic output, a versioned JSON-lines progress pipe, and a synchronize-only cancellation event. Machine events remain separate from human logs. A native supervisor thread drains pipes and bounds diagnostic capture to 256 KiB; it coalesces progress to at most four deliveries per second. Elapsed updates run once per second. Process monitoring is independent of store I/O and never waits on the GUI thread.
-
-Progress writes are serialized across acquisition and local-scan completion. Events carry cumulative counters so coalescing does not lose the local count or confuse it with chart ranks. Local completion updates counters without replacing the current stage, preserving verification instructions while the scan finishes in parallel.
-
-The suspended child joins an owned kill-on-close Job Object before execution, preventing orphans if the viewer dies. Cancellation signals the inherited event; the CLI’s joined watcher sets its existing cancellation flag so scanning, pacing, retrieval, and browser cleanup retain their established behavior. Stop and close waits for process completion; Keep running retains the window. Existing browser jobs remain nested beneath the supervised CLI.
-
-Only a validated launcher channel permits security verification or manual sign-in in a hidden run. Redirected input is not treated as an interactive console. The CLI still owns normal persistent Edge access recovery; GUI runs resume when that window closes, while standalone terminal runs also accept Enter. Stages, counts, verification/sign-in status, and terminal events come from the CLI. Atomic report publication is the completion boundary; later cache, settings, or viewer-launch issues cannot turn a completed comparison into a failure.
+Atomic report publication completes the comparison. Later settings, cache, or reviewer start failures give warnings.
+[Testing](testing.md) records validation limits. [Microsoft's performance guidance](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/performance) explains WebView2 runtime costs.
