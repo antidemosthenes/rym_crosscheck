@@ -474,7 +474,7 @@ void general_annotation_review() {
             require(!whitelist.contains(query), "Generic segmentation cannot broaden exclusions");
         }
     for (auto title : {"Song (Bad]", "Song [Unclosed", "Another Song (Unknown Label)",
-                       "Song - Unknown Label", "(Song)"}) {
+                       "Song-Unknown Label", "(Song)"}) {
         std::vector<rym::Track> local{track(title, {"Band"})};
         auto result = rym::Index(local).suggest(song("Song", {"Band"}), {9, 10}, {1, 1});
         require(result.empty(), "Generic review needs valid pairs and identical nonempty bases");
@@ -696,6 +696,73 @@ void compound_title_review() {
     std::vector<rym::Track> same{track("Weird Fishes/ Arpeggi", {"Radiohead"})};
     require(rym::Index(same).owns(song("Weird Fishes / Arpeggi", {"Radiohead"})),
             "Slash spacing still permits exact ownership");
+}
+void dash_title_review() {
+    for (const auto &compound :
+         {"Disorder - 2019 Digital Master", "Disorder – 2019 Digital Master",
+          "Disorder — 2019 Digital Master", "Disorder - Previously Unknown Label",
+          "Disorder [Notes] - 2019 Digital Master", "\"Disorder\" - 2019 Digital Master",
+          "Intro - Disorder - Finale", "Disorder - 2019 Digital Master/Bonus"})
+        for (bool reverse : {false, true}) {
+            std::vector<rym::Track> tracks{
+                track(reverse ? "Disorder" : compound, {"Band"}, "target.flac")};
+            auto query = song(reverse ? compound : "Disorder", {"Band"});
+            for (int sparse = 0; sparse < 2; ++sparse) {
+                for (std::size_t i = tracks.size(); i < (sparse ? 500u : 80u); ++i)
+                    tracks.push_back(track("Unrelated title " + std::to_string(i),
+                                           {sparse ? "Other Artist" : "Band"},
+                                           std::to_string(i) + ".flac"));
+                rym::Index index(tracks);
+                for (auto cutoff : {rym::Fraction{85, 100}, rym::Fraction{1, 1}}) {
+                    auto result = index.suggest(query, {9, 10}, cutoff);
+                    require(!index.owns(query) && result.size() == 1 &&
+                                result[0].track_id == 0 && result[0].compound_gap &&
+                                result[0].annotation_gap ==
+                                    (std::string_view(compound).find('[') != std::string_view::npos),
+                            "Spaced-dash components produce review after normalization and block removal");
+                    equal_candidates(result, index.suggest(query, {9, 10}, cutoff, true));
+                }
+            }
+        }
+    for (auto title :
+         {"Disorderly - 2019 Digital Master", "Not Disorder - 2019 Digital Master",
+          "Disorder-2019 Digital Master", "Disorder - - 2019 Digital Master",
+          "Disorder - [Unbalanced", "Other (Disorder - 2019 Digital Master)",
+          "Disorder - Live", "Disorder (Live) - 2019 Digital Master",
+          "Disorder - 2019 Digital Master (Live)"}) {
+        std::vector<rym::Track> tracks{track(title, {"Band"})};
+        rym::Index index(tracks);
+        auto query = song("Disorder", {"Band"});
+        auto result = index.suggest(query, {9, 10}, {1, 1});
+        require(result.empty(),
+                "Dash review rejects partial words, unspaced dashes, empty parts, and recording conflicts");
+        equal_candidates(result, index.suggest(query, {9, 10}, {1, 1}, true));
+    }
+    for (auto title : {"2019", "AC"}) {
+        std::vector<rym::Track> tracks{track("Disorder - 2019", {"Band"}),
+                                       track("AC - DC", {"Band"})};
+        require(rym::Index(tracks).suggest(song(title, {"Band"}), {9, 10}, {1, 1}).empty(),
+                "Numeric and short dash components cannot establish review evidence");
+    }
+    auto query = song("Disorder", {"Band"});
+    std::vector<rym::Track> unrelated{
+        track("Disorder - 2019 Digital Master", {"Other Artist"})};
+    require(rym::Index(unrelated).suggest(query, {9, 10}, {85, 100}).empty(),
+            "Dash review still requires eligible artist credits");
+    std::vector<rym::Track> local{track("Disorder - 2019 Digital Master", {"Band"})};
+    require(rym::Index(local).owns(song("DISORDER — 2019 DIGITAL MASTER", {"Band"})),
+            "Equivalent complete dash titles still establish exact ownership");
+    require(!rym::Whitelist::parse("songs=[{title='Disorder',artist='Band'}]")
+                 .contains(song(local[0].title, {"Band"})),
+            "Dash review does not broaden exact whitelist exclusions");
+    rym::Scan scan{local, {}, 0};
+    auto report = rym::parse_report(rym::report_json(rym::compare_library(
+        {{query}, rym::now_seconds()}, scan, ".", false, {9, 10}, {85, 100})));
+    require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                report.songs[0].candidates[0].compound_gap &&
+                report.songs[0].candidates[0].title_score.numerator <
+                    report.songs[0].candidates[0].title_score.denominator,
+            "Disorder Digital Master remains visible for review after report serialization");
 }
 void normalized_component_review() {
     for (const auto &[single, compound] :
@@ -1769,6 +1836,7 @@ int main(int argc, char **argv) {
              {"matching composition and ranking", matching_composition},
              {"included section review", included_section_review},
              {"compound title review", compound_title_review},
+             {"dash title review", dash_title_review},
              {"normalized component review", normalized_component_review},
              {"artist credit overlap", artist_credit_overlap},
              {"slash artist credit review", slash_artist_credit_review},

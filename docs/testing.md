@@ -37,7 +37,7 @@ Temporary files use disposable test directories.
 | --- | --- |
 | Normalization | Unicode, quotes, punctuation, remasters, included sections, recording labels, complete credits, and malformed metadata. |
 | Exact ownership | Shared identity keys, strict whitelist pairs, alternate principals in duplicates, edition grouping, and unchanged validation failures. |
-| Review evidence | All reported matching examples. Unknown and nested annotations, compound titles, whole-word artist overlap, and combined reasons. |
+| Review evidence | All reported matching examples. Unknown annotations, slash and spaced-dash components, whole-word artist overlap, and combined reasons. |
 | Latin spelling | Bôa/BoA, title accents, reordered credits, spelling collisions, non-Latin preservation, and original-text scores. |
 | Retrieval and scoring | Indexed/exhaustive equality, repeated trigrams, short names, thresholds, shuffled records, long strings, and narrow edit bands. |
 | Ranking | Exact rational means, overflow-safe products, deterministic ties, complete ranking bounds, and three-candidate capacity. |

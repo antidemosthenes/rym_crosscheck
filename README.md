@@ -94,8 +94,8 @@ Review comparisons keep the original metadata:
 
 | Field | Review rule |
 | --- | --- |
-| Title annotations | Remove balanced `(...)` and `[...]` blocks from a copy. Compare the remaining complete bases or slash components. |
-| Title components | Require one complete title to equal a complete slash component. Internal substrings alone do not qualify. |
+| Title annotations | Remove balanced `(...)` and `[...]` blocks from a copy. Compare the remaining complete bases or components. |
+| Title components | Split at `/` or a spaced dash (` - `). Require a complete-title match to one component. Internal substrings do not qualify. |
 | Title quotes | Remove outer quote marks. Keep their words and internal apostrophes. |
 | Artist overlap | Require an exact base title and a contained phrase with at least two meaningful words. |
 | Artist slash | Permit `/` as a review boundary. Keep the complete artist identity. `AC/DC` does not imply separate artists. |
@@ -118,7 +118,7 @@ A component match alone cannot override a recording conflict. Latin spelling pre
 | Diacritics differ | Latin accent removal makes complete titles or complete credits equal. |
 | Version differs | Recording or edition labels differ, or one title lacks a label. |
 | Included sections differ | Included-section names differ, or one title lacks the list. |
-| Compound title differs | One complete title equals a slash component of the other title. |
+| Compound title differs | One complete title equals a slash or spaced-dash component of the other title. |
 | Annotations differ | Annotation removal supplies a complete-base or component match. |
 | Unknown album | Album metadata is unavailable or ambiguous. |
 | Local scan incomplete | The scan cannot resolve some local files or directories. |
@@ -128,6 +128,7 @@ A component match alone cannot override a recording conflict. Latin spelling pre
 | `"Heroes"` | `Heroes`, same artist | Owned |
 | `Weird Fishes / Arpeggi` | `Weird Fishes/ Arpeggi`, same artist | Owned |
 | `War Pigs` | `War Pigs/Luke's Wall`, same artist | Needs review: Compound title differs |
+| `Disorder` | `Disorder - 2019 Digital Master`, same artist | Needs review: Compound title differs |
 | `War Pigs` | `War Pigs [Bonus]/Luke's Wall`, same artist | Needs review: Annotations differ, Compound title differs |
 | `Title (Including 'A' and 'B')` | `Title`, same artist | Needs review: Included sections differ |
 | `Enjoy the Silence` | `Enjoy the Silence [Single Version]`, same artist | Needs review: Version differs |

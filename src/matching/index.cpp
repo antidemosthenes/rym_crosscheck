@@ -41,9 +41,15 @@ struct CodepointHash {
     }
 };
 using TitleParts = boost::container::small_vector<std::u32string_view, 2>;
+template <class Character>
+bool has_title_separator(std::basic_string_view<Character> title) noexcept {
+    constexpr Character dash[]{' ', '-', ' '};
+    return title.find(Character('/')) != title.npos ||
+           title.find(std::basic_string_view<Character>(dash, 3)) != title.npos;
+}
 TitleParts title_parts(std::u32string_view title) {
     TitleParts result;
-    if (title.find(U'/') == title.npos)
+    if (!has_title_separator(title))
         return result;
     boost::container::small_vector<char32_t, 8> brackets;
     std::size_t start{};
@@ -79,7 +85,9 @@ TitleParts title_parts(std::u32string_view title) {
             if (brackets.empty() || brackets.back() != (point == U')' ? U'(' : U'['))
                 return {};
             brackets.pop_back();
-        } else if (point == U'/' && brackets.empty()) {
+        } else if (brackets.empty() &&
+                   (point == U'/' || (point == U'-' && i > 0 && i + 1 < title.size() &&
+                                      title[i - 1] == U' ' && title[i + 1] == U' '))) {
             if (!append(i))
                 return {};
             start = i + 1;
@@ -469,7 +477,7 @@ struct Index::Data {
                 for (const auto &parts : variants->second)
                     if (parts.annotated && !parts.base.empty() &&
                         parts.base != identities[id].title.text &&
-                        (!query.parts.empty() || parts.base.find('/') != parts.base.npos)) {
+                        (!query.parts.empty() || has_title_separator(std::string_view(parts.base)))) {
                         auto local = decode_utf8(parts.base);
                         inspect(local, true);
                     }
@@ -573,7 +581,7 @@ struct Index::Data {
             check_cancelled();
             for (const auto &parts : variants)
                 if (parts.annotated && parts.base != identities[id].title.text &&
-                    parts.base.find('/') != parts.base.npos) {
+                    has_title_separator(std::string_view(parts.base))) {
                     auto points = decode_utf8(parts.base);
                     bind_components(id, points, true);
                 }

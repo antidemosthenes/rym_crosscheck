@@ -26,7 +26,7 @@ Boost supplies flat maps, flat sets, JSON, and candidate storage. The project us
 | Identity | Normalized title, complete artists, recording version, and included sections. |
 | Principal artist | The first artist in a recorded artist list, before sorting. |
 | Base title | A comparison copy after removal of balanced annotations. |
-| Component | One complete part of a title with slash separators. |
+| Component | One complete part of a title with slash or spaced-dash separators. |
 | Review spelling | A comparison copy after removal of Latin diacritics. |
 | Candidate | A local recording that qualifies as a review suggestion. |
 
@@ -73,7 +73,7 @@ Each duplicate group keeps every recorded principal and annotation source. The s
 | Artist overlap | Equal base titles and a contained artist phrase with two meaningful words. |
 | Edition or section difference | Eligible artists and qualifying base-title similarity. Protected recording evidence must remain compatible. |
 | Annotation difference | Equal complete, nonempty bases after balanced block removal. Artists must remain eligible. |
-| Component difference | One complete title equals a complete slash component. Artists must qualify or share a recorded principal. |
+| Component difference | One complete title equals a complete component. Artists must qualify or share a recorded principal. |
 | Diacritic difference | Equal complete canonical titles or equal complete credits after Latin accent removal. Recording checks remain active. |
 
 Annotation extraction removes balanced `(...)` and `[...]` blocks from a separate copy.
@@ -83,7 +83,9 @@ Empty bases cannot qualify. Original metadata remains available.
 The component parser handles canonical titles and extracted bases. Annotation removal precedes segmentation of the extracted form.
 Outer component quotes keep their words. Components require at least three code points and one letter.
 
-Empty components and unbalanced brackets invalidate the split. Slashes inside parentheses do not split the canonical title.
+Separators are `/` and a spaced dash (` - `). Normalization converts typographic dashes before segmentation.
+An unspaced hyphen does not split a title. Unknown suffix labels can qualify through complete-component equality.
+Empty components and unbalanced brackets invalidate the split. Separators inside parentheses do not split the canonical title.
 Internal substrings alone cannot qualify.
 
 Equal complete extracted bases can expose incompatible recording labels for review. Component equality alone cannot override those recording checks.
