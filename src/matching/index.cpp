@@ -117,7 +117,7 @@ std::string utf8_text(std::u32string_view points) {
     }
     return result;
 }
-std::optional<std::u32string> latin_credit(const std::vector<std::string> &artists) {
+std::optional<std::vector<std::string>> latin_names(const std::vector<std::string> &artists) {
     std::optional<std::vector<std::string>> names;
     for (std::size_t i = 0; i < artists.size(); ++i) {
         if (std::ranges::all_of(artists[i], [](unsigned char point) noexcept { return point < 0x80; }))
@@ -132,23 +132,35 @@ std::optional<std::u32string> latin_credit(const std::vector<std::string> &artis
     if (!names)
         return {};
     std::ranges::sort(*names);
+    return names;
+}
+std::u32string joined_credit(const std::vector<std::string> &names) {
     std::u32string result;
-    for (const auto &name : *names) {
+    for (const auto &name : names) {
         if (!result.empty())
             result += U" | ";
         result += decode_utf8(name);
     }
     return result;
 }
-Fraction complete_similarity(std::u32string_view left, std::u32string_view right) {
+std::optional<std::u32string> latin_credit(const std::vector<std::string> &artists) {
+    if (auto names = latin_names(artists))
+        return joined_credit(*names);
+    return {};
+}
+std::size_t aligned_bound(std::u32string_view left, std::u32string_view right) noexcept {
     auto length = std::max(left.size(), right.size());
-    if (!length)
-        return {1, 1};
     auto shorter = std::min(left.size(), right.size());
     auto bound = length - shorter;
     for (std::size_t i = 0; i < shorter; ++i)
         bound += left[i] != right[i];
-    auto distance = edit_distance(left, right, bound);
+    return bound;
+}
+Fraction complete_similarity(std::u32string_view left, std::u32string_view right) {
+    auto length = std::max(left.size(), right.size());
+    if (!length)
+        return {1, 1};
+    auto distance = edit_distance(left, right, aligned_bound(left, right));
     return {static_cast<std::uint32_t>(length - distance), static_cast<std::uint32_t>(length)};
 }
 struct CompoundQuery {
@@ -171,6 +183,63 @@ struct CompoundMatch {
     Fraction score{0, 1};
     bool annotated{};
 };
+struct NotationFlags {
+    bool notation{}, diacritics{}, annotated{}, component{};
+    bool operator==(const NotationFlags &) const = default;
+};
+struct NotationForm {
+    std::u32string text;
+    NotationFlags flags;
+    bool operator==(const NotationForm &) const = default;
+};
+using NotationForms = boost::container::small_vector<NotationForm, 2>;
+NotationForms notation_forms(const Name &title, const AnnotationText &annotations) {
+    NotationForms result;
+    auto add = [&](ReviewTitle prepared, bool annotated) {
+        auto insert = [&](std::u32string text, bool component) {
+            NotationForm form{std::move(text),
+                              {prepared.notation, prepared.diacritics, annotated, component}};
+            if (std::ranges::find(result, form) == result.end())
+                result.push_back(std::move(form));
+        };
+        for (auto part : title_parts(prepared.whole.points))
+            insert(std::u32string(part), true);
+        insert(std::move(prepared.whole.points), false);
+    };
+    if (auto prepared = review_title(title.text))
+        add(std::move(*prepared), false);
+    if (annotations.annotated && !annotations.base.empty())
+        if (auto prepared = review_title(annotations.source)) {
+            auto extracted = extract_annotations(prepared->whole.text);
+            if (extracted.annotated)
+                if (auto base = review_title(annotations.base);
+                    base && base->whole.text == extracted.base)
+                    add(std::move(*base), true);
+        }
+    return result;
+}
+struct NotationMatch {
+    bool matched{};
+    NotationFlags flags;
+};
+void retain_notation(NotationMatch &match, NotationFlags query, NotationFlags local) noexcept {
+    if ((!query.notation && !local.notation) || (query.component && local.component))
+        return;
+    NotationFlags combined{true, query.diacritics || local.diacritics,
+                           query.annotated || local.annotated, query.component || local.component};
+    auto priority = [](NotationFlags flags) noexcept {
+        return 4 * flags.component + 2 * flags.annotated + flags.diacritics;
+    };
+    if (!match.matched || priority(combined) < priority(match.flags))
+        match = {true, combined};
+}
+template <class Function> void raw_notation_forms(const auto &forms, Function function) {
+    for (const auto &form : forms) {
+        function(form.text, NotationFlags{false, false, form.annotated, false});
+        for (auto part : form.parts)
+            function(part, NotationFlags{false, false, form.annotated, true});
+    }
+}
 void retain_compound(CompoundMatch &current, std::size_t short_length,
                      std::size_t long_length, bool annotated) noexcept {
     Fraction score{static_cast<std::uint32_t>(short_length),
@@ -412,6 +481,14 @@ struct Index::Data {
     boost::unordered_flat_map<std::string, std::vector<std::size_t>> annotation_titles;
     NameIndex artist_index, title_index;
     LatinIndex latin_artists, latin_titles;
+    struct NotationPosting {
+        std::size_t id;
+        NotationFlags flags;
+        bool operator==(const NotationPosting &) const = default;
+    };
+    boost::unordered_flat_map<std::u32string, std::vector<NotationPosting>, CodepointHash,
+                              std::equal_to<>> notation_keys;
+    bool has_notation{};
     static const std::string &base(const Identity &query) noexcept {
         return query.annotations.source.empty() ? query.title.text : query.annotations.base;
     }
@@ -484,13 +561,102 @@ struct Index::Data {
         }
         return result;
     }
+    auto find_notation(const auto &raw_forms, const NotationForms &prepared,
+                       const auto &eligible, bool exhaustive) const {
+        boost::unordered_flat_map<std::size_t, NotationMatch> matches;
+        if (!has_notation && std::ranges::none_of(prepared, [](const auto &form) {
+                return form.flags.notation;
+            }))
+            return matches;
+        auto retain = [&](std::size_t id, NotationFlags query, NotationFlags local) {
+            if ((!query.notation && !local.notation) || (query.component && local.component) ||
+                !eligible(id))
+                return;
+            retain_notation(matches[id], query, local);
+        };
+        if (exhaustive) {
+            for (std::size_t id = 0; id < identities.size(); ++id) {
+                check_cancelled();
+                if (!eligible(id))
+                    continue;
+                auto inspect = [&](std::u32string_view local, NotationFlags flags) {
+                    raw_notation_forms(raw_forms, [&](auto query, auto query_flags) {
+                        if (query == local)
+                            retain(id, query_flags, flags);
+                    });
+                    for (const auto &query : prepared)
+                        if (query.text == local)
+                            retain(id, query.flags, flags);
+                };
+                inspect(identities[id].title.points, {});
+                for (auto part : title_parts(identities[id].title.points))
+                    inspect(part, {false, false, false, true});
+                if (auto variants = annotation_variants.find(id);
+                    variants != annotation_variants.end())
+                    for (const auto &parts : variants->second)
+                        if (parts.annotated && !parts.base.empty()) {
+                            auto points = decode_utf8(parts.base);
+                            inspect(points, {false, false, true, false});
+                            for (auto part : title_parts(points))
+                                inspect(part, {false, false, true, true});
+                        }
+                auto inspect_prepared = [&](const AnnotationText &parts) {
+                    for (const auto &form : notation_forms(identities[id].title, parts))
+                        inspect(form.text, form.flags);
+                };
+                if (auto variants = annotation_variants.find(id);
+                    variants != annotation_variants.end())
+                    for (const auto &parts : variants->second)
+                        inspect_prepared(parts);
+                else
+                    inspect_prepared({});
+            }
+            return matches;
+        }
+        auto lookup = [&](std::u32string_view text, NotationFlags flags) {
+            if (auto found = notation_keys.find(text); found != notation_keys.end())
+                for (const auto &posting : found->second)
+                    retain(posting.id, flags, posting.flags);
+        };
+        raw_notation_forms(raw_forms, lookup);
+        for (const auto &form : prepared) {
+            lookup(form.text, form.flags);
+            if (!form.flags.notation)
+                continue;
+            for (auto id : title_index.query(form.text, {1, 1}, false))
+                if (identities[id].title.points == form.text)
+                    retain(id, form.flags, {});
+            if (!annotation_titles.empty())
+                if (auto found = annotation_titles.find(utf8_text(form.text));
+                    found != annotation_titles.end())
+                    for (auto id : found->second)
+                        retain(id, form.flags, {false, false, true, false});
+            if (auto found = compound_parts.find(form.text); found != compound_parts.end())
+                for (const auto &posting : found->second)
+                    retain(posting.id, form.flags, {false, false, posting.annotated, true});
+        }
+        return matches;
+    }
     explicit Data(const std::vector<Track> &source) : tracks(source) {
         identities.reserve(source.size());
         representatives.reserve(source.size());
         artist_ids.reserve(source.size());
         exact.reserve(source.size());
-        boost::unordered_flat_map<std::string, std::size_t> credit_ids;
+        boost::unordered_flat_map<std::vector<std::string>, std::size_t,
+                                  boost::hash<std::vector<std::string>>> credit_ids;
         boost::unordered_flat_map<std::size_t, std::vector<std::size_t>> alternate_principals;
+        auto bind_notation = [&](const Identity &id, std::size_t slot) {
+            auto forms = notation_forms(id.title, id.annotations);
+            if (forms.empty())
+                return;
+            for (auto &form : forms) {
+                has_notation |= form.flags.notation;
+                auto &postings = notation_keys.try_emplace(std::move(form.text)).first->second;
+                NotationPosting posting{slot, form.flags};
+                if (std::ranges::find(postings, posting) == postings.end())
+                    postings.push_back(posting);
+            }
+        };
         auto bind_annotations = [&](AnnotationText parts, std::size_t slot, bool duplicate) {
             if (parts.source.empty()) {
                 if (auto found = annotation_variants.find(slot);
@@ -554,12 +720,14 @@ struct Index::Data {
                 if (source[track].path.native() < source[representative].path.native())
                     representative = track;
                 bind_principal(id.principal, existing->second, true);
+                bind_notation(id, existing->second);
                 bind_annotations(std::move(id.annotations), existing->second, true);
                 continue;
             }
             auto slot = identities.size();
+            bind_notation(id, slot);
             bind_annotations(std::move(id.annotations), slot, false);
-            auto [credit, fresh] = credit_ids.emplace(id.credit.text, artists.size());
+            auto [credit, fresh] = credit_ids.try_emplace(id.artists, artists.size());
             if (fresh) {
                 artist_index.add(id.credit.points);
                 latin_artists.add(credit->second, latin_credit(id.artists));
@@ -604,6 +772,8 @@ struct Index::Data {
             return !a.section_gap;
         if (a.compound_gap != b.compound_gap)
             return !a.compound_gap;
+        if (a.notation_gap != b.notation_gap)
+            return !a.notation_gap;
         const auto numerator = [](const Candidate &c) noexcept {
             return std::uint64_t(c.artist.numerator) * c.title.denominator +
                    std::uint64_t(c.title.numerator) * c.artist.denominator;
@@ -633,6 +803,8 @@ struct Index::Data {
         auto length = std::max(query.size(), local.size());
         auto limit = static_cast<std::size_t>(std::uint64_t(cutoff.denominator - cutoff.numerator) *
                                               length / cutoff.denominator);
+        if (candidate.notation_gap)
+            limit = std::min(limit, aligned_bound(query, local));
         if (!exhaustive && best.size() == best.capacity()) {
             auto can_improve = [&](std::size_t distance) noexcept {
                 candidate.title = {static_cast<std::uint32_t>(length - distance),
@@ -689,7 +861,10 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
         if (passes(score, artist_cutoff))
             artist_scores.emplace(id, score);
     }
-    auto folded_credit = latin_credit(query.artists);
+    auto folded_names = latin_names(query.artists);
+    std::optional<std::u32string> folded_credit;
+    if (folded_names)
+        folded_credit = joined_credit(*folded_names);
     boost::unordered_flat_set<std::size_t> diacritic_artists;
     for (auto credit : data_->latin_artists.query(
              query.credit.points, folded_credit, data_->artist_index,
@@ -697,8 +872,12 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
              [&](std::size_t id) {
                  return latin_credit(data_->identities[data_->credit_tracks[id].front()].artists);
              }, exhaustive)) {
-        if (data_->identities[data_->credit_tracks[credit].front()].artists.size() !=
-            query.artists.size())
+        const auto &local_names = data_->identities[data_->credit_tracks[credit].front()].artists;
+        if (local_names.size() != query.artists.size())
+            continue;
+        auto folded_local = latin_names(local_names);
+        if ((folded_names ? *folded_names : query.artists) !=
+            (folded_local ? *folded_local : local_names))
             continue;
         diacritic_artists.insert(credit);
         if (!artist_scores.contains(credit))
@@ -732,6 +911,16 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
         compound_matches = data_->indexed_compounds(query_forms, [&](std::size_t id) {
             return artist_scores.contains(data_->artist_ids[id]) || credit_gaps.contains(id);
         });
+    boost::unordered_flat_map<std::size_t, NotationMatch> notation_matches;
+    if (data_->has_notation || title_notation_hint(query.title.text) ||
+        title_notation_hint(query.annotations.source)) {
+        auto prepared_notation = notation_forms(query.title, query.annotations);
+        notation_matches = data_->find_notation(
+            query_forms, prepared_notation,
+            [&](std::size_t id) {
+                return artist_scores.contains(data_->artist_ids[id]) || credit_gaps.contains(id);
+            }, exhaustive);
+    }
     std::vector<std::size_t> candidates;
     if (!artist_scores.empty()) {
         std::size_t eligible{};
@@ -766,6 +955,9 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
                     if (artist_scores.contains(data_->artist_ids[id]))
                         candidates.push_back(id);
                 for (auto id : diacritic_titles)
+                    if (artist_scores.contains(data_->artist_ids[id]))
+                        candidates.push_back(id);
+                for (const auto &[id, match] : notation_matches)
                     if (artist_scores.contains(data_->artist_ids[id]))
                         candidates.push_back(id);
                 if (candidates.size() != previous_size) {
@@ -838,7 +1030,27 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
             upper = {1, 1};
         if (diacritic_title && !compound_gap && !annotation_gap)
             upper = complete_similarity(query.title.points, local.title.points);
-        if (!compound_gap && !annotation_gap && !diacritic_title && !passes(upper, title_cutoff))
+        auto title_scored = compound_gap || annotation_gap || diacritic_title;
+        auto notation_gap = false;
+        if (!title_scored)
+            if (auto match = notation_matches.find(id); match != notation_matches.end() &&
+                match->second.matched && compatible) {
+                if (passes(upper, title_cutoff)) {
+                    auto score = similarity(query.title.points, local.title.points, title_cutoff);
+                    if (passes(score, title_cutoff)) {
+                        upper = score;
+                        title_scored = true;
+                    }
+                }
+                if (!title_scored) {
+                    notation_gap = true;
+                    compound_gap = match->second.flags.component;
+                    annotation_gap = match->second.flags.annotated;
+                    diacritic_gap |= match->second.flags.diacritics;
+                }
+            }
+        if (!compound_gap && !annotation_gap && !diacritic_title && !notation_gap &&
+            !passes(upper, title_cutoff))
             continue;
         auto artist_score = artist == artist_scores.end() ? Fraction{0, 1} : artist->second;
         if (artist == artist_scores.end() && (gap || artist_gap)) {
@@ -858,9 +1070,11 @@ boost::container::static_vector<Candidate, 3> Index::suggest(const Identity &que
                             local.sections != query.sections,
                             compound_gap,
                             annotation_gap,
-                            diacritic_gap};
-        if (!data_->score_title(candidate, query.title.points, local.title.points, title_cutoff,
-                                best, compound_gap || annotation_gap || diacritic_title, exhaustive))
+                            diacritic_gap,
+                            notation_gap};
+        auto score_cutoff = notation_gap ? Fraction{0, 1} : title_cutoff;
+        if (!data_->score_title(candidate, query.title.points, local.title.points, score_cutoff,
+                                best, title_scored, exhaustive))
             continue;
         if (best.size() < best.capacity())
             best.push_back(candidate);

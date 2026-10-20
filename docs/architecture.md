@@ -65,6 +65,32 @@ Malformed section lists remain title text.
 Length-prefixed key fields prevent delimiter ambiguity. Duplicate identities share one candidate.
 Each duplicate group keeps every recorded principal and annotation source. The smallest native path selects the representative recording.
 
+### Ordered review preparation
+
+Both sources use the same preparation functions. Conservative identity keys remain unchanged.
+Recording versions, included sections, complete credits, and original metadata remain available before review transformations.
+
+1. Normalize Unicode, case, whitespace, and typographic punctuation.
+2. Retain semantic evidence before any review-only removal.
+3. Fold supported Latin diacritics in a title copy.
+4. Expand numbered labels before ASCII digits.
+5. Remove trailing featured-artist text from that copy.
+6. Keep the whole form and create a base with balanced annotation removal.
+7. Normalize resulting formatting before component segmentation.
+8. Apply artist eligibility, recording checks, equality rules, scoring, and ranking.
+
+Numbered aliases are `Pt`/`Part`, `Vol`/`Volume`, and `No`/`Number`.
+An optional period and spacing precede the digits. Digit sequences stay intact, including leading zeros.
+Complete token boundaries prevent changes inside other words. Roman numerals, written numbers, and arbitrary acronyms remain unchanged.
+
+Credit markers are `feat`, `ft`, `feature`, and `featuring`, with an optional period.
+Credits occur outside brackets or inside a final balanced credit block. The title and guest text must be nonempty.
+Boundary detection precedes numbered-label rewriting. Guest names do not undergo that rewriting.
+Malformed bracket structures disable notation preparation.
+
+Whole-form equality takes priority over base or component evidence. Two components alone cannot establish equality between different compound titles.
+Notation preparation adds no new recording exception. Existing artist-tag matching remains separate from title-credit removal.
+
 ### Review exceptions
 
 | Evidence | Required condition |
@@ -75,6 +101,7 @@ Each duplicate group keeps every recorded principal and annotation source. The s
 | Annotation difference | Equal complete, nonempty bases after balanced block removal. Artists must remain eligible. |
 | Component difference | One complete title equals a complete component. Artists must qualify or share a recorded principal. |
 | Diacritic difference | Equal complete canonical titles or equal complete credits after Latin accent removal. Recording checks remain active. |
+| Title notation difference | Prepared complete forms agree, or one agrees with a complete component. Artists and recording versions must remain eligible. |
 
 Annotation extraction removes balanced `(...)` and `[...]` blocks from a separate copy.
 Nested blocks and unknown labels are valid. Malformed pairs invalidate the entire extraction.
@@ -100,6 +127,8 @@ Letters without this decomposition stay intact.
 
 Complete credits undergo spelling conversion separately for each artist. The matcher sorts the converted list again.
 Names that collide after conversion remain separate entries. No accent conversion changes ownership or whitelist identities.
+Artist groups use the complete structured lists as keys. Joined display text cannot merge different credit structures.
+Latin credit equality also compares the converted lists, including name boundaries and entry counts.
 
 ### Candidate retrieval
 
@@ -128,6 +157,11 @@ Separate sparse indexes store annotation bases, title components, artist word pa
 Component postings retain full-form lengths and annotation flags. Reverse queries use existing canonical indexes.
 The matcher prepares query forms once. Candidate scoring does not parse local components again.
 
+Notation preparation stores only changed review keys with numeric postings and evidence flags.
+Queries reuse the existing canonical, annotation, and component indexes for unchanged counterparts.
+Keys own their strings. Postings retain no views into movable containers.
+The exhaustive oracle rebuilds prepared local forms independently of notation postings.
+
 Component parsing uses inline Boost storage for the usual two components. Bracket stacks also use inline storage.
 Both containers grow when necessary. Inline capacity does not limit valid components or nesting.
 
@@ -141,12 +175,17 @@ similarity = 1 - distance / max(m,n)
 
 Integer fractions preserve threshold boundaries. Distance scoring removes shared prefixes and suffixes first.
 It rejects impossible lengths and stops when the edit limit fails. Worker-local row buffers avoid repeated allocation.
+The distance limit cannot exceed the longer string. This bound prevents overflow with an unlimited caller budget.
 
 Equal complete extracted bases score 100%. Complete component relations use the shorter length divided by the longer length.
 This ratio compares the selected complete forms, including extra components. These paths require no distance matrix.
 
 Diacritic candidates keep actual normalized-text scores. An upper edit bound counts unequal aligned characters and the length difference.
 A bounded distance pass then computes the exact score. Long strings with a few accents avoid a full-width pass.
+
+Notation candidates also keep canonical title scores from before review transformations.
+The notation flag applies only when existing title eligibility fails. Existing fuzzy, annotation, component, and diacritic suggestions retain their scores and reasons.
+The matcher reuses successful fuzzy scores. Remaining notation candidates use the shared bounded scorer and the current ranking bound.
 
 Candidate retrieval has no count limit before scoring. Ranking prefers candidates without these flags, in this order:
 
@@ -157,6 +196,7 @@ Candidate retrieval has no count limit before scoring. Ranking prefers candidate
 5. Version difference.
 6. Section difference.
 7. Component difference.
+8. Title notation difference.
 
 Ties use mean artist/title similarity, artist similarity, title, and native path.
 Native x64 wide products compare rational means without overflow.
@@ -204,7 +244,7 @@ HTML views stay within each reply's lifetime. Browser streams use the Windows nu
 Schema-1 JSON keeps all chart entries, ownership, original metadata, candidate values, warnings, counts, and whitelist data.
 Excluded chart entries remain available for later whitelist removal.
 
-Optional candidate flags are `version_gap`, `artist_gap`, `section_gap`, `compound_gap`, `annotation_gap`, and `diacritic_gap`.
+Optional candidate flags are `version_gap`, `artist_gap`, `section_gap`, `compound_gap`, `annotation_gap`, `diacritic_gap`, and `notation_gap`.
 Older reports default missing flags to false. Raw caches remain compatible because each run rebuilds identities.
 Saved ownership decisions require another comparison to change.
 

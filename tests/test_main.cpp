@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <random>
 #include <type_traits>
 #ifdef _DEBUG
@@ -79,7 +80,8 @@ void equal_candidates(const auto &left, const auto &right) {
                     left[i].section_gap == right[i].section_gap &&
                     left[i].compound_gap == right[i].compound_gap &&
                     left[i].annotation_gap == right[i].annotation_gap &&
-                    left[i].diacritic_gap == right[i].diacritic_gap,
+                    left[i].diacritic_gap == right[i].diacritic_gap &&
+                    left[i].notation_gap == right[i].notation_gap,
                 "Indexed ranking differs");
         require(left[i].artist.numerator == right[i].artist.numerator &&
                     left[i].artist.denominator == right[i].artist.denominator &&
@@ -764,6 +766,205 @@ void dash_title_review() {
                     report.songs[0].candidates[0].title_score.denominator,
             "Disorder Digital Master remains visible for review after report serialization");
 }
+void artist_group_boundaries() {
+    auto check = [](std::vector<rym::Track> tracks,
+                    const std::vector<std::pair<std::vector<std::string>, std::string>> &queries) {
+        for (bool reverse : {false, true}) {
+            if (reverse)
+                std::ranges::reverse(tracks);
+            rym::Index index(tracks);
+            for (const auto &[artists, path] : queries) {
+                auto query = song("Credit boundary test", artists);
+                auto result = index.suggest(query, {1, 1}, {1, 1});
+                require(!index.owns(query) && result.size() == 1 && result[0].diacritic_gap &&
+                            tracks[result[0].track_id].path == rym::wide(path),
+                        "Latin credit equality preserves complete structured artist boundaries");
+                equal_candidates(result, index.suggest(query, {1, 1}, {1, 1}, true));
+            }
+        }
+    };
+    check({track("Credit boundary test", {"Bôa | Guest"}, "literal.flac"),
+           track("Credit boundary test", {"Bôa", "Guest"}, "structured.flac")},
+          {{{"Boa | Guest"}, "literal.flac"}, {{"Boa", "Guest"}, "structured.flac"}});
+    check({track("Credit boundary test", {"Á", "B | C"}, "first.flac"),
+           track("Credit boundary test", {"A | B", "Ć"}, "second.flac")},
+          {{{"A", "B | C"}, "first.flac"}, {{"A | B", "C"}, "second.flac"}});
+}
+void title_notation_review() {
+    auto prepare = [](std::string_view title) {
+        return rym::review_title(rym::normalize(title).text);
+    };
+    for (const auto &[original, expected] : std::vector<std::pair<std::string, std::string>>{
+             {"Song Pt.3", "song part 3"}, {"Song PT 3", "song part 3"},
+             {"Song Pť.3", "song part 3"},
+             {"Song Part.3", "song part 3"}, {"Song Vol.03", "song volume 03"},
+             {"Song Volume03", "song volume 03"}, {"Song No.3", "song number 3"},
+             {"Song Number. 3", "song number 3"},
+             {"Song Pt.3 Vol.02 No.1", "song part 3 volume 02 number 1"},
+             {"Étude Pt.3 feat. Guest", "etude part 3"}, {"が Pt.3", "が part 3"},
+             {"ø Pt.3", "ø part 3"}, {"Song Pt.3 feat. Vol.2", "song part 3"}}) {
+        auto result = prepare(original);
+        require(result && result->notation && result->whole.text == expected &&
+                    result->whole.points == rym::decode_utf8(expected),
+                "Review normalization expands only supported numbered labels and preserves digits");
+    }
+    for (auto marker :
+         {"feat", "feat.", "ft", "ft.", "feature", "feature.", "featuring", "featuring."})
+        for (auto boundary : {" ", " - ", " (", " ["}) {
+            auto title = std::string("Song Pt.3") + boundary + marker + " Guest";
+            if (std::string_view(boundary).ends_with('('))
+                title += ')';
+            else if (std::string_view(boundary).ends_with('['))
+                title += ']';
+            auto result = prepare(title);
+            require(result && result->notation && result->whole.text == "song part 3",
+                    "Trailing title credits share a parser for all supported markers and boundaries");
+        }
+    for (auto title : {"Song Part 3", "Song Volume 03", "Song Number 3", "Song Pt. III",
+                       "Song Vol. Three", "Song No.Ⅲ", "Song Apt.3", "Song Pt.3a", "Song Volta3",
+                       "Song feat.", "Song (feat.)", "feat. Guest", "Song featurette Guest",
+                       "Song Pt.3 [Bad)", "Song Pt.3 (Unclosed", "Song Pt.3 Closed)"})
+        require(!prepare(title), "Unsupported or malformed notation remains unchanged");
+    auto folded = prepare("Étude Part 3");
+    require(folded && folded->diacritics && !folded->notation &&
+                folded->whole.text == "etude part 3",
+            "Latin folding precedes notation without inventing an abbreviation reason");
+    const std::vector<std::pair<std::string, std::string>> examples{
+        {"Luv (Sic.) Part 3", "Luv (Sic.) Pt.3 feat. Shing02"},
+        {"Song Part 3", "Song Pt.3"}, {"Song Volume 03", "Song Vol.03"},
+        {"Song Part 3", "Song Pť.3"},
+        {"Song Number 3", "Song No.3"}, {"Song Part 3", "Song Part 3 feat. Guest"},
+        {"Étude Part 3", "Etude Pt.3"}, {"Song Part 3", "Song Pt.3 [Unknown notes]"},
+        {"Song Part 3", "Intro/Song Pt.3/Finale"},
+        {"Song Part 3", "Intro - Song Pt.3 - Finale"},
+        {"Sòng Part 3", "Intro/Song Pt.3 [Notes]/Finale"},
+        {"Song Part 3 (Extended Version)", "Song Pt.3"}};
+    for (const auto &[plain, variant] : examples)
+        for (bool reverse : {false, true}) {
+            std::vector<rym::Track> tracks{
+                track(reverse ? plain : variant, {"Nujabes"}, "target.flac")};
+            auto query = song(reverse ? variant : plain, {"Nujabes"});
+            for (int sparse = 0; sparse < 2; ++sparse) {
+                for (std::size_t i = tracks.size(); i < (sparse ? 240u : 40u); ++i)
+                    tracks.push_back(track("Unrelated title " + std::to_string(i),
+                                           {sparse ? "Other Artist" : "Nujabes"},
+                                           std::to_string(i) + ".flac"));
+                rym::Index index(tracks);
+                auto result = index.suggest(query, {9, 10}, {1, 1});
+                require(!index.owns(query) && result.size() == 1 && result[0].track_id == 0 &&
+                            result[0].notation_gap,
+                        "Ordered review forms preserve ownership rules in both retrieval paths");
+                equal_candidates(result, index.suggest(query, {9, 10}, {1, 1}, true));
+                auto query_identity = rym::identity(query.title, query.artists);
+                auto local_identity = rym::identity(tracks[0].title, tracks[0].artists);
+                auto expected = rym::similarity(query_identity.title.points,
+                                                local_identity.title.points, {0, 1});
+                require(result[0].title.numerator == expected.numerator &&
+                            result[0].title.denominator == expected.denominator,
+                        "Notation reviews retain scores from the original canonical titles");
+            }
+            require(!rym::Whitelist::parse("songs=[{artist='Nujabes',title='" + plain + "'}]")
+                         .contains(song(variant, {"Nujabes"})),
+                    "Notation normalization cannot broaden artist-title whitelist exclusions");
+        }
+    for (auto local : {"Song Pt.4", "Song Pt.03", "Song Pt.III", "Song Pt.3a",
+                       "Song Pt.3 [Broken", "Song Pt.3 (Live)", "Song Pt.3 (Club Remix)",
+                       "Song Pt.3 extra words"}) {
+        std::vector<rym::Track> tracks{track(local, {"Nujabes"})};
+        rym::Index index(tracks);
+        auto query = song("Song Part 3", {"Nujabes"});
+        auto result = index.suggest(query, {9, 10}, {1, 1});
+        require(result.empty(), "Notation review requires equality and compatible recording evidence");
+        equal_candidates(result, index.suggest(query, {9, 10}, {1, 1}, true));
+    }
+    for (auto local : {"Song (feat. Guest)", "Song - Pt.3"}) {
+        std::vector<rym::Track> tracks{track(local, {"Nujabes"})};
+        auto result = rym::Index(tracks).suggest(song("Song", {"Nujabes"}), {9, 10}, {1, 1});
+        require(result.size() == 1 && !result[0].notation_gap,
+                "Existing annotation and component evidence keeps its original reasons");
+    }
+    const std::string long_title = "A very long and distinctive song title ";
+    std::vector<rym::Track> similar{track(long_title + "Pt.3", {"Nujabes"})};
+    auto ordinary = rym::Index(similar).suggest(song(long_title + "Part 3", {"Nujabes"}),
+                                              {9, 10}, {85, 100});
+    require(ordinary.size() == 1 && !ordinary[0].notation_gap,
+            "Ordinary fuzzy eligibility does not acquire a notation flag");
+    std::vector<rym::Track> local{track("Luv (Sic.) Pt.3 feat. Shing02", {"Nujabes"})};
+    auto query = song("Luv (Sic.) Part 3", {"Nujabes"});
+    rym::Scan scan{local, {}, 0};
+    auto report = rym::parse_report(rym::report_json(rym::compare_library(
+        {{query}, rym::now_seconds()}, scan, ".", false, {9, 10}, {85, 100})));
+    require(!report.songs[0].owned && report.songs[0].candidates.size() == 1 &&
+                report.songs[0].candidates[0].notation_gap &&
+                !report.songs[0].candidates[0].annotation_gap &&
+                !rym::passes(report.songs[0].candidates[0].title_score, {85, 100}),
+            "The Nujabes example remains visible with truthful scores after report serialization");
+    local[0].artists = {"Other Artist"};
+    require(rym::Index(local).suggest(query, {9, 10}, {1, 1}).empty(),
+            "Title notation cannot bypass artist eligibility");
+    local[0].artists = {"Nujabes", "Shing02"};
+    auto collaboration = rym::Index(local).suggest(query, {9, 10}, {1, 1});
+    require(collaboration.size() == 1 && collaboration[0].credit_gap &&
+                collaboration[0].notation_gap,
+            "Structured credit mismatches retain separate title-notation evidence");
+    equal_candidates(collaboration, rym::Index(local).suggest(query, {9, 10}, {1, 1}, true));
+    std::vector<rym::Track> different_parts{
+        track("Intro Pt.3/Finale", {"Nujabes"})};
+    require(rym::Index(different_parts)
+                .suggest(song("Intro Part 3/Outro", {"Nujabes"}), {9, 10}, {1, 1})
+                .empty(),
+            "Shared components cannot make two different complete compound titles equal");
+    std::vector<rym::Track> collisions{track("aabaaa part 3", {"Nujabes"})};
+    rym::Index collision_index(collisions);
+    auto collision_query = song("aaabaa pt.3", {"Nujabes"});
+    auto collision_result = collision_index.suggest(collision_query, {9, 10}, {1, 1});
+    require(collision_result.empty(), "Equal trigram counts do not prove prepared-title equality");
+    equal_candidates(collision_result,
+                     collision_index.suggest(collision_query, {9, 10}, {1, 1}, true));
+    std::vector<rym::Track> ranked{
+        track("Song Pt.3 feat. Guest", {"Nujabes"}, "z.flac"),
+        track("Song Pt.3 feat. Guest", {"Nujabes"}, "a.flac"),
+        track("Song Pt 3 feat. Other Guest", {"Nujabes"}, "b.flac"),
+        track("Song Part 3 featuring Third Guest", {"Nujabes"}, "c.flac")};
+    std::vector<std::filesystem::path> expected_paths;
+    for (int order = 0; order < 2; ++order) {
+        if (order)
+            std::ranges::reverse(ranked);
+        rym::Index index(ranked);
+        auto result = index.suggest(song("Song Part 3", {"Nujabes"}), {9, 10}, {1, 1});
+        require(result.size() == 3 && index.unique_tracks() == 3,
+                "Notation suggestions retain three distinct canonical recordings");
+        std::vector<std::filesystem::path> paths;
+        for (const auto &candidate : result)
+            paths.push_back(ranked[candidate.track_id].path);
+        if (order)
+            require(paths == expected_paths, "Notation ranking is independent of insertion order");
+        else
+            expected_paths = std::move(paths);
+        equal_candidates(result,
+                         index.suggest(song("Song Part 3", {"Nujabes"}), {9, 10}, {1, 1}, true));
+    }
+    const std::vector<std::string> forms{
+        "Song Part 3", "Song Pt.3 feat. Guest", "Song Pt.03", "Song Part 03",
+        "Song Pt.4 [Notes]", "Song (feat. Guest)", "Song", "Song Pt.3 (Live)",
+        "Étude Vol.2", "Etude Volume 2", "Intro/Song Pt.3/Finale",
+        "Intro - Song Part 3 - Outro", "Song Number 3", "Song No.3", "Song Pt.III"};
+    std::vector<rym::Track> varied;
+    for (std::size_t i = 0; i < 160; ++i)
+        varied.push_back(track(forms[i % forms.size()], {"Artist " + std::to_string(i % 7)},
+                               std::to_string(i) + ".flac"));
+    for (int order = 0; order < 2; ++order) {
+        if (order)
+            std::ranges::reverse(varied);
+        rym::Index index(varied);
+        for (std::size_t i = 0; i < 55; ++i)
+            for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{85, 100}, rym::Fraction{1, 1}}) {
+                auto request = song(forms[i % forms.size()], {"Artist " + std::to_string(i % 7)});
+                equal_candidates(index.suggest(request, {9, 10}, cutoff),
+                                 index.suggest(request, {9, 10}, cutoff, true));
+            }
+    }
+}
 void normalized_component_review() {
     for (const auto &[single, compound] :
          std::vector<std::pair<std::string, std::string>>{
@@ -1132,6 +1333,65 @@ void oracle() {
     equal_candidates(index.suggest(query, {9, 10}, {85, 100}),
                      index.suggest(query, {9, 10}, {85, 100}, true));
 }
+void combined_review_oracle() {
+    const std::vector<std::string> forms{
+        "Melody Part 3", "Melody Pt.3 feat. Guest", "Melody Pt.03", "Melody Part 03",
+        "Mélody Pt.3 [Notes]", "Melody (feat. Guest)", "Melody (Live)",
+        "Melody Pt.3 (Acoustic)", "Intro/Melody Pt.3/Finale", "Melody Part 3 - Outro",
+        "Melody [Nested (notes)] Pt.3", "Melody [Broken Pt.3", "Melody Vol.2 ft. Guest",
+        "Melody Volume 2", "Melody No.3", "Melody Number 3", "Melody Pt.III"};
+    const std::vector<std::vector<std::string>> credits{
+        {"Band"}, {"Bánd"}, {"Band", "Guest"}, {"Guest", "Band"},
+        {"Band | Guest"}, {"Band", "Guést"}, {"The Band Experience"},
+        {"Band/ Guest"}, {"Other Artist"}};
+    std::mt19937 random(6317);
+    std::vector<rym::Track> tracks;
+    for (std::size_t i = 0; i < 150; ++i)
+        tracks.push_back(track(forms[random() % forms.size()], credits[random() % credits.size()],
+                               std::to_string(i) + ".flac"));
+    for (int order = 0; order < 2; ++order) {
+        if (order)
+            std::ranges::reverse(tracks);
+        rym::Index index(tracks);
+        for (std::size_t i = 0; i < 60; ++i) {
+            auto query = song(forms[i % forms.size()], credits[i % credits.size()]);
+            for (auto cutoff : {rym::Fraction{0, 1}, rym::Fraction{85, 100}, rym::Fraction{1, 1}})
+                equal_candidates(index.suggest(query, cutoff, cutoff),
+                                 index.suggest(query, cutoff, cutoff, true));
+        }
+    }
+    for (auto prefix : {std::string("Melody"), std::string(500, 'x') + " melody"}) {
+        std::vector<rym::Track> dense;
+        for (std::size_t i = 0; i < 45; ++i) {
+            auto title = prefix + (i % 3 ? " Pt.3 feat. " : " Part 3 featuring ") +
+                         std::string(i + 1, 'g');
+            if (i % 5 == 0)
+                title += " (Live)";
+            auto artists = i % 2 ? std::vector<std::string>{"Band", "Guest"}
+                                 : std::vector<std::string>{"Band"};
+            dense.push_back(track(title, artists, std::to_string(i) + ".flac"));
+        }
+        std::vector<std::filesystem::path> expected_paths;
+        for (int order = 0; order < 2; ++order) {
+            if (order)
+                std::ranges::reverse(dense);
+            rym::Index index(dense);
+            auto query = song(prefix + " Part 3", {"Band"});
+            auto best = index.suggest(query, {9, 10}, {1, 1});
+            require(best.size() == 3, "Dense notation matches retain three suggestions");
+            equal_candidates(best, index.suggest(query, {9, 10}, {1, 1}, true));
+            std::vector<std::filesystem::path> paths;
+            for (const auto &candidate : best)
+                paths.push_back(dense[candidate.track_id].path);
+            if (order)
+                require(paths == expected_paths, "Notation distance bounds preserve deterministic ties");
+            else
+                expected_paths = std::move(paths);
+            equal_candidates(index.suggest(query, {9, 10}, {85, 100}),
+                             index.suggest(query, {9, 10}, {85, 100}, true));
+        }
+    }
+}
 void distance_oracle() {
     auto reference = [](std::u32string_view a, std::u32string_view b) {
         std::vector<std::size_t> previous(a.size() + 1), current(a.size() + 1);
@@ -1157,6 +1417,10 @@ void distance_oracle() {
     for (const auto &a : strings)
         for (const auto &b : strings) {
             auto expected = reference(a, b);
+            for (auto limit : {std::numeric_limits<std::size_t>::max() - 1,
+                               std::numeric_limits<std::size_t>::max()})
+                require(rym::edit_distance(a, b, limit) == expected,
+                        "Unbounded edit budgets cannot overflow the band or failure sentinel");
             for (std::size_t limit = 0; limit <= std::max(a.size(), b.size()); ++limit) {
                 auto actual = rym::edit_distance(a, b, limit);
                 require(expected <= limit ? actual == expected : actual > limit,
@@ -1837,12 +2101,15 @@ int main(int argc, char **argv) {
              {"included section review", included_section_review},
              {"compound title review", compound_title_review},
              {"dash title review", dash_title_review},
+             {"title notation review", title_notation_review},
+             {"artist group boundaries", artist_group_boundaries},
              {"normalized component review", normalized_component_review},
              {"artist credit overlap", artist_credit_overlap},
              {"slash artist credit review", slash_artist_credit_review},
              {"diacritic review", diacritic_review},
              {"matching", matching},
              {"indexed oracle", oracle},
+             {"combined review oracle", combined_review_oracle},
              {"distance oracle", distance_oracle},
              {"HTML parsing", parsing},
              {"report review", report_review_tests},

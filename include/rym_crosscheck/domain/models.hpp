@@ -36,6 +36,7 @@ struct Candidate {
     bool compound_gap{};
     bool annotation_gap{};
     bool diacritic_gap{};
+    bool notation_gap{};
 };
 struct Missing {
     Song song;

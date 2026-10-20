@@ -18,6 +18,7 @@ struct ReportCandidate {
     bool compound_gap{};
     bool annotation_gap{};
     bool diacritic_gap{};
+    bool notation_gap{};
 };
 struct ReportSong {
     Song song;

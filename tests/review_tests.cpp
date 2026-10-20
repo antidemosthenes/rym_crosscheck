@@ -117,6 +117,12 @@ void report_review_tests() {
             "Older reports without diacritic-review flags remain readable");
     legacy_candidate["diacritic_gap"] = "true";
     rejects([&] { rym::parse_report(legacy); });
+    legacy_candidate.erase("diacritic_gap");
+    legacy_candidate.erase("notation_gap");
+    require(!rym::parse_report(legacy).songs[1].candidates[0].notation_gap,
+            "Older reports without notation flags remain readable");
+    legacy_candidate["notation_gap"] = "true";
+    rejects([&] { rym::parse_report(legacy); });
     for (const auto *field : {"generated", "captured"}) {
         auto future = rym::report_json(report);
         future[field] = 253402300800LL;

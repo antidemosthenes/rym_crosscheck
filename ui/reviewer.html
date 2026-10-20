@@ -410,7 +410,8 @@ function candidateCell(candidates) {
     if (candidate.compound_gap) labels.push('Compound title differs');
     if (candidate.annotation_gap) labels.push('Annotations differ');
     if (candidate.diacritic_gap) labels.push('Diacritics differ');
-    labels.push(`Artist ${artist}`, `${candidate.annotation_gap ? 'segmented base title' : candidate.compound_gap ? 'full title' : candidate.section_gap || candidate.version_gap ? 'base title' : 'title'} ${title}`);
+    if (candidate.notation_gap) labels.push('Title notation differs');
+    labels.push(`Artist ${artist}`, `${candidate.notation_gap ? 'original normalized title' : candidate.annotation_gap ? 'segmented base title' : candidate.compound_gap ? 'full title' : candidate.section_gap || candidate.version_gap ? 'base title' : 'title'} ${title}`);
     block.append(element('div', labels.join(' · '), 'score'));
     cell.append(block);
   }

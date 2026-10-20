@@ -12,6 +12,11 @@ struct AnnotationText {
     std::string source;
     bool annotated{};
 };
+struct ReviewTitle {
+    Name whole;
+    bool notation{};
+    bool diacritics{};
+};
 struct Identity {
     Name title;
     Name credit;
@@ -26,6 +31,8 @@ Name normalize(std::string_view value, bool title = false);
 std::u32string decode_utf8(std::string_view value);
 // Returns a review spelling only when Latin diacritics change.
 std::optional<std::u32string> latin_diacritics(std::u32string_view normalized);
+bool title_notation_hint(std::string_view normalized) noexcept;
+std::optional<ReviewTitle> review_title(std::string_view normalized);
 AnnotationText extract_annotations(std::string_view normalized);
 Identity identity(std::string_view title, const std::vector<std::string> &artists);
 std::string identity_key(std::string_view title, const std::vector<std::string> &artists);

@@ -38,8 +38,9 @@ Temporary files use disposable test directories.
 | Normalization | Unicode, quotes, punctuation, remasters, included sections, recording labels, complete credits, and malformed metadata. |
 | Exact ownership | Shared identity keys, strict whitelist pairs, alternate principals in duplicates, edition grouping, and unchanged validation failures. |
 | Review evidence | All reported matching examples. Unknown annotations, slash and spaced-dash components, whole-word artist overlap, and combined reasons. |
-| Latin spelling | Bôa/BoA, title accents, reordered credits, spelling collisions, non-Latin preservation, and original-text scores. |
-| Retrieval and scoring | Indexed/exhaustive equality, repeated trigrams, short names, thresholds, shuffled records, long strings, and narrow edit bands. |
+| Latin spelling | Bôa/BoA, title accents, reordered credits, literal separators, structured-credit collisions, non-Latin preservation, and original-text scores. |
+| Title notation | Nujabes example, numbered aliases, featured credits, preserved digits, malformed text, combined rules, original scores, and older reports. |
+| Retrieval and scoring | Indexed/exhaustive equality, combined review rules, repeated trigrams, short names, thresholds, shuffled records, long strings, and unlimited edit budgets. |
 | Ranking | Exact rational means, overflow-safe products, deterministic ties, complete ranking bounds, and three-candidate capacity. |
 | Component storage | More components and deeper nesting than inline capacity. Storage growth must preserve all valid evidence. |
 | Reports | JSON round trips, Unicode, hostile metadata, warnings, offline context, relative paths, and optional flags in old reports. |
@@ -53,6 +54,7 @@ Temporary files use disposable test directories.
 A separate dynamic-programming oracle checks edit distance.
 The exhaustive matcher bypasses index filters and ranking shortcuts.
 These checks test different failure classes.
+Dense notation cases check ranking bounds with short and long titles, guest credits, and incompatible recordings.
 
 Debug checks retained CRT allocations across repeated, warmed runs.
 These checks cover selected paths. They do not prove that every possible path releases all resources.

@@ -87,7 +87,8 @@ Report compare_library(const Snapshot &snapshot, const Scan &scan,
                                           candidate.artist, candidate.title, candidate.credit_gap,
                                           candidate.version_gap, candidate.artist_gap,
                                           candidate.section_gap, candidate.compound_gap,
-                                          candidate.annotation_gap, candidate.diacritic_gap});
+                                          candidate.annotation_gap, candidate.diacritic_gap,
+                                          candidate.notation_gap});
             }
         }
         result.songs.push_back(std::move(row));
@@ -123,7 +124,8 @@ boost::json::object report_fields(const Report &report) {
                                     {"section_gap", candidate.section_gap},
                                     {"compound_gap", candidate.compound_gap},
                                     {"annotation_gap", candidate.annotation_gap},
-                                    {"diacritic_gap", candidate.diacritic_gap}});
+                                    {"diacritic_gap", candidate.diacritic_gap},
+                                    {"notation_gap", candidate.notation_gap}});
         songs.emplace_back(boost::json::object{{"rank", row.song.rank},
                                                {"title", row.song.title},
                                                {"artists", strings(row.song.artists)},
@@ -206,6 +208,8 @@ Report parse_report(const boost::json::value &json) {
                 match.annotation_gap = gap->as_bool();
             if (const auto *gap = candidate.if_contains("diacritic_gap"))
                 match.diacritic_gap = gap->as_bool();
+            if (const auto *gap = candidate.if_contains("notation_gap"))
+                match.notation_gap = gap->as_bool();
             identity(match.title, match.artists);
             relative_path(match.path);
             record.candidates.push_back(std::move(match));

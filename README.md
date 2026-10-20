@@ -80,7 +80,7 @@ The program uses three types of matching:
 
 1. Exact ownership requires equal normalized identities.
 2. Ordinary fuzzy matching requires at least **90% artist** and **85% title** similarity.
-3. Review exceptions admit structural differences or Latin diacritics.
+3. Review exceptions admit structural differences, Latin diacritics, or common title notation.
 
 Normalization converts equivalent formatting to one form. Both fields normalize Unicode, case, whitespace, and typographic punctuation.
 Titles also normalize outer quotes, slash spacing, and explicit remaster suffixes.
@@ -97,12 +97,28 @@ Review comparisons keep the original metadata:
 | Title annotations | Remove balanced `(...)` and `[...]` blocks from a copy. Compare the remaining complete bases or components. |
 | Title components | Split at `/` or a spaced dash (` - `). Require a complete-title match to one component. Internal substrings do not qualify. |
 | Title quotes | Remove outer quote marks. Keep their words and internal apostrophes. |
+| Numbered labels | Expand `Pt` to `Part`, `Vol` to `Volume`, and `No` to `Number` before digits. Accept optional periods and spacing. |
+| Title credits | Remove trailing `feat`, `ft`, `feature`, or `featuring` text from a review copy. Accept an optional period. |
 | Artist overlap | Require an exact base title and a contained phrase with at least two meaningful words. |
 | Artist slash | Permit `/` as a review boundary. Keep the complete artist identity. `AC/DC` does not imply separate artists. |
 | Latin diacritics | Compare a separate spelling, such as `ô` → `o`. Require equal complete titles or equal complete credits. |
 
 Annotation removal accepts unknown labels. Empty bases and malformed pairs do not qualify.
 These review rules never prove ownership. They can admit suggestions below the ordinary thresholds.
+
+Title review uses this order:
+
+1. Retain recording versions, included sections, artist credits, and original metadata.
+2. Fold supported Latin diacritics in a copy.
+3. Expand supported numbered labels outside guest names.
+4. Remove trailing featured-artist text from that copy.
+5. Keep the whole title. Create a base by removing balanced annotations.
+6. Normalize resulting formatting before slash or spaced-dash segmentation.
+
+The new notation rule requires equal complete forms or an existing complete-component relation.
+It does not expand arbitrary acronyms, Roman numerals, or written numbers. Digit sequences retain leading zeros.
+Title-credit removal requires a nonempty title and guest credit. It also accepts a final balanced credit block.
+Artist tags remain unchanged. Existing recording checks still apply.
 
 Recording conflicts normally block suggestions. Equal complete bases after annotation removal can expose recording conflicts for review.
 A component match alone cannot override a recording conflict. Latin spelling preserves non-Latin text and exact whitelist identities.
@@ -120,6 +136,7 @@ A component match alone cannot override a recording conflict. Latin spelling pre
 | Included sections differ | Included-section names differ, or one title lacks the list. |
 | Compound title differs | One complete title equals a slash or spaced-dash component of the other title. |
 | Annotations differ | Annotation removal supplies a complete-base or component match. |
+| Title notation differs | Numbered-label expansion or title-credit removal is necessary for this suggestion. |
 | Unknown album | Album metadata is unavailable or ambiguous. |
 | Local scan incomplete | The scan cannot resolve some local files or directories. |
 
@@ -138,11 +155,12 @@ A component match alone cannot override a recording conflict. Latin spelling pre
 | `All Along the Watchtower`, The Jimi Hendrix Experience | Same title, Jimi Hendrix | Needs review: Artist name overlap |
 | `I'm God`, Clams Casino | Same title, Clams Casino/ Imogen Heap | Needs review: Artist name overlap |
 | `Duvet`, Bôa | Same title, BoA | Needs review: Diacritics differ |
+| `Luv (Sic.) Part 3`, Nujabes | `Luv (Sic.) Pt.3 feat. Shing02`, Nujabes | Needs review: Title notation differs |
 
 The King Crimson included-section examples require review when local section names are absent.
 Equivalent section lists can match despite differences in quotes or separators. Supported separators are `and`, `&`, and commas.
 
-Scores measure text similarity, not ownership probability. Original normalized text supplies diacritic scores.
+Scores measure text similarity, not ownership probability. Original normalized text supplies diacritic and notation scores.
 **Segmented base title** scores use the text after annotation removal. Equal bases score 100%. Component scores can be lower.
 
 Duplicate editions share one suggestion slot. Suggestions contain relative local paths.

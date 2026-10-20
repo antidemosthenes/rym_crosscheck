@@ -392,6 +392,118 @@ AnnotationText extract_annotations(std::string_view normalized) {
     result.base = format_title(result.base);
     return result;
 }
+bool title_notation_hint(std::string_view normalized) noexcept {
+    return normalized.find("pt") != normalized.npos || normalized.find("part") != normalized.npos ||
+           normalized.find("vol") != normalized.npos || normalized.find("no") != normalized.npos ||
+           normalized.find("number") != normalized.npos || normalized.find("feat") != normalized.npos ||
+           normalized.find("ft") != normalized.npos ||
+           std::ranges::any_of(normalized, [](unsigned char c) noexcept { return c >= 0x80; });
+}
+std::optional<ReviewTitle> review_title(std::string_view normalized) {
+    auto non_ascii = std::ranges::any_of(normalized,
+                                       [](unsigned char c) noexcept { return c >= 0x80; });
+    if (!non_ascii && !title_notation_hint(normalized))
+        return {};
+    auto word = [](unsigned char c) noexcept {
+        return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c >= 0x80;
+    };
+    std::string folded;
+    if (non_ascii)
+        if (auto points = latin_diacritics(decode_utf8(normalized)))
+            for (auto point : *points) {
+                utf8proc_uint8_t encoded[4];
+                auto length = utf8proc_encode_char(static_cast<utf8proc_int32_t>(point), encoded);
+                folded.append(reinterpret_cast<char *>(encoded), static_cast<std::size_t>(length));
+            }
+    auto text = folded.empty() ? normalized : std::string_view(folded);
+    auto credit = [&](std::string_view label) noexcept {
+        for (auto marker : {std::string_view("featuring"), std::string_view("feature"),
+                            std::string_view("feat"), std::string_view("ft")}) {
+            if (!label.starts_with(marker))
+                continue;
+            auto guest = label.substr(marker.size());
+            if (guest.starts_with('.'))
+                guest.remove_prefix(1);
+            else if (!guest.starts_with(' '))
+                continue;
+            guest = trim(guest);
+            if (!guest.empty() && std::ranges::any_of(guest, word))
+                return true;
+        }
+        return false;
+    };
+    boost::container::small_vector<char, 8> brackets;
+    auto cut = text.size(), opening = text.npos;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        auto point = text[i];
+        if (point == '(' || point == '[') {
+            if (brackets.empty())
+                opening = i;
+            brackets.push_back(point);
+        } else if (point == ')' || point == ']') {
+            if (brackets.empty() || brackets.back() != (point == ')' ? '(' : '['))
+                return {};
+            brackets.pop_back();
+            if (brackets.empty() && i + 1 == text.size() && opening > 0 &&
+                credit(trim(text.substr(opening + 1, i - opening - 1))))
+                cut = std::min(cut, opening);
+        } else if (brackets.empty() && i > 0 && text[i - 1] == ' ' && point == 'f' &&
+                   credit(text.substr(i)))
+            cut = std::min(cut, i);
+    }
+    if (!brackets.empty())
+        return {};
+    auto retained = trim(text.substr(0, cut));
+    if (cut < text.size() && retained.ends_with(" -"))
+        retained = trim(retained.substr(0, retained.size() - 2));
+    if (retained.empty())
+        return {};
+    std::string expanded;
+    std::size_t copied{};
+    for (std::size_t i = 0; i < retained.size(); ++i) {
+        if (i && word(static_cast<unsigned char>(retained[i - 1])))
+            continue;
+        for (const auto &[label, full] :
+             {std::pair{std::string_view("part"), std::string_view("part")},
+              {"pt", "part"}, {"volume", "volume"}, {"vol", "volume"},
+              {"number", "number"}, {"no", "number"}}) {
+            if (!retained.substr(i).starts_with(label))
+                continue;
+            auto digits = i + label.size();
+            if (digits < retained.size() && retained[digits] == '.')
+                ++digits;
+            while (digits < retained.size() && retained[digits] == ' ')
+                ++digits;
+            auto end = digits;
+            while (end < retained.size() && retained[end] >= '0' && retained[end] <= '9')
+                ++end;
+            if (end == digits ||
+                (end < retained.size() && word(static_cast<unsigned char>(retained[end]))))
+                continue;
+            auto label_text = retained.substr(i, digits - i);
+            if (label_text.size() != full.size() + 1 || !label_text.starts_with(full) ||
+                label_text.back() != ' ') {
+                if (expanded.empty())
+                    expanded.reserve(retained.size() + 16);
+                expanded.append(retained.substr(copied, i - copied)).append(full).push_back(' ');
+                copied = digits;
+            }
+            i = end - 1;
+            break;
+        }
+    }
+    bool notation = cut < text.size() || !expanded.empty();
+    if (!notation && folded.empty())
+        return {};
+    if (!expanded.empty())
+        expanded.append(retained.substr(copied));
+    ReviewTitle result;
+    result.whole.text = format_title(expanded.empty() ? retained : std::string_view(expanded));
+    result.whole.points = decode_utf8(result.whole.text);
+    result.notation = notation;
+    result.diacritics = !folded.empty();
+    return result;
+}
 namespace {
 Identity make_identity(std::string_view title, const std::vector<std::string> &artists,
                        bool prepare_review) {
@@ -519,6 +631,7 @@ Fraction threshold(std::string_view value) {
     return {numerator / divisor, denominator / divisor};
 }
 std::size_t edit_distance(std::u32string_view a, std::u32string_view b, std::size_t limit) {
+    limit = std::min(limit, std::max(a.size(), b.size()));
     if (a.size() > b.size())
         std::swap(a, b);
     if (b.size() - a.size() > limit)
