@@ -137,7 +137,7 @@ A component match alone cannot override a recording conflict. Latin spelling pre
 | Compound title differs | One complete title equals a slash or spaced-dash component of the other title. |
 | Annotations differ | Annotation removal supplies a complete-base or component match. |
 | Title notation differs | Numbered-label expansion or title-credit removal is necessary for this suggestion. |
-| Unknown album | Album metadata is unavailable or ambiguous. |
+| Unavailable album | Album metadata is unavailable or ambiguous. Live lookups use up to three attempts. Persistent failures appear in metadata warnings. |
 | Local scan incomplete | The scan cannot resolve some local files or directories. |
 
 | RYM metadata | Local metadata | Result |

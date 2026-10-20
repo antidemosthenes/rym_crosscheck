@@ -31,6 +31,7 @@ struct Report {
     bool offline{};
     std::size_t identified{}, reused{};
     std::vector<std::string> warnings;
+    std::vector<std::string> metadata_warnings;
     std::vector<ReportSong> songs;
     std::vector<WhitelistEntry> whitelist;
 };

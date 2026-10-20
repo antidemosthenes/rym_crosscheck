@@ -434,7 +434,7 @@ std::string Browser::fetch(std::string_view url) {
         if (status == BrowserPageState::verification) {
             state.restricted.request_stop();
             if (!interactive() && !launcher_)
-                throw Error("RYM verification requires an interactive terminal; rerun "
+                throw VerificationRequired("RYM verification requires an interactive terminal; rerun "
                             "interactively or use --offline.");
             throw VerificationRequired("RYM security check detected at " + std::string(current) +
                                        " while retrieving " + target + ".");

@@ -45,7 +45,7 @@ Temporary files use disposable test directories.
 | Component storage | More components and deeper nesting than inline capacity. Storage growth must preserve all valid evidence. |
 | Reports | JSON round trips, Unicode, hostile metadata, warnings, offline context, relative paths, and optional flags in old reports. |
 | Chart access | Pagination, security/sign-in transitions in either order, retry limits, timeout, cancellation, and noninteractive rejection. |
-| Album workers | Worker limits, pacing, exactly-once jobs, recoverable failures, and queued-request cancellation. |
+| Album workers | Worker limits, pacing, successful single-attempt jobs, bounded retries, invalid metadata, restrictions, cancellation, and saved metadata warnings. |
 | Local storage | Tags, filename format, cache reuse, eviction, invalid snapshots, explicit clear failures, and previous-report preservation. |
 | CLI and launcher | Option ranges, removed arguments, paths, settings, transient resets, Windows quoting, run locks, progress, and hidden children. |
 | Whitelist and imports | Complete replacement, external differences, malformed files, source preservation, concurrent saves, newer generations, and partial success. |

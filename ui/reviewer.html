@@ -205,8 +205,8 @@ details[open] > .whitelist-summary > .icon { transform: rotate(90deg); }
 .notice.warning { background: var(--warning-bg); color: var(--warn); }
 .notice.error { background: #fbeae6; color: var(--error); }
 .notice button { margin-left: 10px; font-size: 11px; }
-#warnings summary { font-weight: 600; }
-#warnings ul { padding-left: 22px; overflow-wrap: anywhere; }
+#warnings summary, #metadata-warnings summary { font-weight: 600; }
+#warnings ul, #metadata-warnings ul { padding-left: 22px; overflow-wrap: anywhere; }
 .footer { position: fixed; bottom: 0; left: var(--sidebar-width); right: 0; display: flex; gap: 24px; justify-content: space-between; align-items: center; background: var(--glass); backdrop-filter: blur(12px); border-top: 1px solid var(--line); padding: 18px var(--page-padding); z-index: 4; }
 .footer p { margin: 0; }
 #pending { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
@@ -289,6 +289,7 @@ details[open] > .whitelist-summary > .icon { transform: rotate(90deg); }
   <div class="stats"><div class="stat"><span>Missing songs</span><strong id="stat-missing">—</strong></div><div class="stat"><span>Needs review</span><strong id="stat-review">—</strong></div><div class="stat"><span>Whitelist entries</span><strong id="stat-whitelist">—</strong></div></div>
   <div id="new-report" class="notice hidden">A newer report is available. Your displayed whitelist and selections have been retained.<button id="discard-reload">Load latest results</button></div>
   <details id="warnings" class="notice warning hidden"><summary id="warning-summary"></summary><ul id="warning-list"></ul></details>
+  <details id="metadata-warnings" class="notice warning hidden"><summary id="metadata-warning-summary"></summary><ul id="metadata-warning-list"></ul></details>
   <section class="panel"><div class="heading"><h3>Current results <span id="results-total" class="muted"></span></h3><p>Select songs to exclude from future comparisons. Close local matches are suggestions for you to review.</p></div>
     <div class="controls"><input id="results-search" type="search" placeholder="Search songs, artists or local paths" aria-label="Search current results"><select id="status-filter" aria-label="Filter result status"><option value="all">All statuses</option><option value="missing">Missing</option><option value="review">Needs review</option></select><button id="results-all">Select all matching</button><button id="results-none">Deselect all matching</button><span id="results-selected" class="selection-count"></span></div>
     <div class="table-wrap" tabindex="0" role="region" aria-label="Current result songs"><table><thead><tr><th class="check">Add</th><th>Song / artist</th><th>Album</th><th>Status</th><th>Possible local matches</th></tr></thead><tbody id="results-body"></tbody></table></div><div id="results-empty" class="empty hidden"></div><div class="pager"><span id="results-count" class="count"></span><button id="results-prev">Previous</button><span id="results-page"></span><button id="results-next">Next</button></div>
@@ -310,6 +311,7 @@ const selection = {results: new Set(), whitelist: new Set()};
 const pages = {results: 0, whitelist: 0}, filters = {}, scheduled = {};
 let whitelistNeedsRender = true;
 let warningsNeedRender = true;
+let metadataWarningsNeedRender = true;
 let currentScreen = 'home';
 let runCounts = {};
 const navigation = [['home-button','home'], ['nav-comparison','form'], ['nav-results','results']];
@@ -439,13 +441,13 @@ function renderSection(section) {
     const tr = element('tr'), check = element('td', undefined, 'check');
     check.append(checkbox(section, row)); tr.append(check);
     if (section === 'results') {
-      tr.append(songCell(row.title, row.artists, row.url, '#' + row.rank), element('td', row.album || 'Unknown', 'album'));
+      tr.append(songCell(row.title, row.artists, row.url, '#' + row.rank), element('td', row.album || 'Unavailable', 'album'));
       const status = element('td');
       status.append(element('span', row.candidates.length ? 'Needs review' : 'Missing', 'badge' + (row.candidates.length ? ' review' : '')));
       tr.append(status, candidateCell(row.candidates));
     } else {
       tr.append(songCell(row.display_title, row.display_artists, row.display_url, row.url && !row.display_title ? row.url : ''),
-        element('td', row.display_album || 'Unknown', 'album'), element('td', row.url ? 'RYM URL' : 'Artist / title', 'muted'));
+        element('td', row.display_album || 'Unavailable', 'album'), element('td', row.url ? 'RYM URL' : 'Artist / title', 'muted'));
     }
     fragment.append(tr);
   }
@@ -462,6 +464,11 @@ function renderWarnings() {
   if (!warningsNeedRender || !$('warnings').open) return;
   warningsNeedRender = false;
   $('warning-list').replaceChildren(...(data.warnings || []).map(w => element('li', w)));
+}
+function renderMetadataWarnings() {
+  if (!metadataWarningsNeedRender || !$('metadata-warnings').open) return;
+  metadataWarningsNeedRender = false;
+  $('metadata-warning-list').replaceChildren(...(data.metadata_warnings || []).map(w => element('li', w)));
 }
 function setBusy(value) {
   busy = value;
@@ -499,6 +506,12 @@ function accept(payload) {
   warningsNeedRender = true;
   $('warning-list').replaceChildren();
   renderWarnings();
+  const metadataWarnings = data.metadata_warnings || [];
+  $('metadata-warnings').classList.toggle('hidden', !metadataWarnings.length);
+  $('metadata-warning-summary').textContent = `Album metadata unavailable for ${metadataWarnings.length} songs. Matching results are unaffected.`;
+  metadataWarningsNeedRender = true;
+  $('metadata-warning-list').replaceChildren();
+  renderMetadataWarnings();
   render(); setBusy(false);
 }
 for (const section of ['results', 'whitelist']) {
@@ -523,6 +536,7 @@ for (const section of ['results', 'whitelist']) {
 $('status-filter').addEventListener('change', () => { pages.results = 0; renderSection('results'); });
 $('whitelist-panel').addEventListener('toggle', () => { if ($('whitelist-panel').open && whitelistNeedsRender) renderSection('whitelist'); });
 $('warnings').addEventListener('toggle', renderWarnings);
+$('metadata-warnings').addEventListener('toggle', renderMetadataWarnings);
 function save() {
   if (!busy && currentScreen === 'results') {
     const action = {type: 'save', add: [...selection.results], remove: [...selection.whitelist]};

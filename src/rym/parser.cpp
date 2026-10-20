@@ -109,6 +109,17 @@ std::string locale_text(lxb_dom_node_t *node) {
         return text(locale);
     return text(node);
 }
+std::string album_text(std::string value) {
+    if (value.find('\0') != value.npos)
+        return {};
+    try {
+        if (normalize(value).text.empty())
+            return {};
+    } catch (const Error &) {
+        return {};
+    }
+    return value;
+}
 std::size_t rank_of(lxb_dom_node_t *row) {
     std::string rank = attribute(row, "data-rank");
     for (auto *ancestor = row->parent; ancestor && rank.empty(); ancestor = ancestor->parent) {
@@ -236,6 +247,7 @@ Page parse_chart(std::string_view html, std::string_view source) {
                         }
                     }
                 });
+            song.album = album_text(std::move(song.album));
             if (song.url.empty())
                 throw Error("Chart song URL missing; RYM markup may have changed.");
             identity(song.title, song.artists);
@@ -258,6 +270,8 @@ Page parse_chart(std::string_view html, std::string_view source) {
     return page;
 }
 std::string parse_album(std::string_view html) {
+    if (challenged(html))
+        throw Error("RYM verification page received instead of album metadata.");
     Document document(html);
     boost::unordered_flat_set<std::string> albums;
     boost::unordered_flat_set<std::string> header_albums;
@@ -266,13 +280,13 @@ std::string parse_album(std::string_view html) {
             visit(node, [&](auto *child) {
                 if (has_class(child, "album") &&
                     attribute(child, "href").starts_with("/release/album/")) {
-                    auto name = locale_text(child);
+                    auto name = album_text(locale_text(child));
                     if (!name.empty())
                         header_albums.insert(std::move(name));
                 }
             });
         if (has_class(node, "song_album") || has_class(node, "page_song_album")) {
-            auto album = locale_text(node);
+            auto album = album_text(locale_text(node));
             if (!album.empty())
                 albums.insert(std::move(album));
         }
@@ -289,7 +303,9 @@ std::string parse_album(std::string_view html) {
                             if (album->is_object())
                                 if (auto *name = album->as_object().if_contains("name");
                                     name && name->is_string())
-                                    albums.insert(std::string(name->as_string()));
+                                    if (auto name_text = album_text(std::string(name->as_string()));
+                                        !name_text.empty())
+                                        albums.insert(std::move(name_text));
                         }
                         if (auto *graph = object.if_contains("@graph"))
                             inspect(*graph);

@@ -72,6 +72,7 @@ void report_review_tests() {
     scan.warnings = {"Unresolved: unknown.mp3"};
     scan.reused = 1;
     auto report = rym::compare_library(snapshot, scan, music, true, {9, 10}, {85, 100});
+    report.metadata_warnings = {"Album unavailable for #1 Café </script>: temporary lookup failure"};
     require(report.songs[2].owned && !report.songs[1].candidates.empty(),
             "Ownership and candidate data retained");
     auto restored = rym::parse_report(rym::report_json(report));
@@ -79,7 +80,15 @@ void report_review_tests() {
                 restored.warnings == scan.warnings && restored.offline && restored.reused == 1,
             "JSON preserves Unicode, hostile text and scan context");
     require(restored.songs[1].candidates[0].path == "near.flac", "Candidate paths remain relative");
+    require(restored.metadata_warnings == report.metadata_warnings,
+            "Metadata warnings survive report serialization separately from local scan warnings");
     auto legacy = rym::report_json(report);
+    legacy.erase("metadata_warnings");
+    require(rym::parse_report(legacy).metadata_warnings.empty(),
+            "Older reports without metadata warnings remain readable");
+    auto malformed_warnings = legacy;
+    malformed_warnings["metadata_warnings"] = "not a list";
+    rejects([&] { rym::parse_report(malformed_warnings); });
     auto &legacy_candidate =
         legacy["songs"].as_array()[1].as_object()["candidates"].as_array()[0].as_object();
     legacy_candidate.erase("version_gap");
@@ -155,6 +164,8 @@ void report_review_tests() {
     require(saved.warning.empty() && saved.document.whitelist.entries().size() == 2,
             "Selected additions deduplicate");
     auto view = rym::review_json(saved.document);
+    require(view.at("metadata_warnings").as_array().size() == 1,
+            "Saved metadata warnings reach the reviewer");
     require(view.at("songs").as_array()[0].as_object().at("whitelisted").as_bool(),
             "Addition immediately leaves current results");
     const auto key = "url:" + first_url;

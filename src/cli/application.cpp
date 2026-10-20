@@ -163,7 +163,7 @@ int application(const std::vector<std::string> &arguments,
                 channel->emit("albums", {{"message", "Looking up associated albums"},
                                          {"results", missing.size()}});
             auto factory = [&] { return transport->fork(); };
-            enrich_albums(missing, snapshot, factory, web_workers);
+            report.metadata_warnings = enrich_albums(missing, snapshot, factory, web_workers);
             for (auto &row : report.songs)
                 row.song.album = snapshot.songs[row.song.rank - 1].album;
         }

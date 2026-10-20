@@ -118,8 +118,14 @@ Workers share navigation pacing. The default interval is 1,000 ms between starts
 Additional workers overlap page loads without removing the delay.
 
 These are application limits, not known server quotas. Browser asset requests are separate.
-A restriction stops queued album requests. Other album failures leave `Unknown` values and warnings.
-These failures do not prevent a report.
+A restriction stops queued album requests without another attempt or access window.
+Other album failures use up to three attempts per song. Every attempt follows the shared request delay.
+Empty, invalid, or ambiguous metadata also triggers another attempt. A successful lookup requires one unique supported album.
+An exhausted lookup does not stop unrelated album jobs.
+
+The report retains album failures as separate metadata warnings. Empty album fields show `Unavailable`.
+A real album named `Unknown` remains valid. Album failures do not affect matching or the comparison exit code.
+Titles and complete artists remain required. Invalid chart identities stop publication and preserve the previous report.
 
 A successful comparison atomically replaces the report.
 Incomplete chart ranks or failed access keep the previous report.
@@ -175,7 +181,7 @@ The reviewer does not install the runtime automatically. Saved files remain inta
 | Cache or profile lock | Finish the other comparison. Alternatively, use separate dedicated paths. |
 | Lock error with a Windows number | Check permissions and directory availability. This error differs from a sharing lock. |
 | Missing or small offline snapshot | Complete a live comparison with sufficient Top N and the same cache directory. |
-| Unknown album | The program found no unique supported album. Album metadata does not determine ownership. |
+| Unavailable album | Check metadata warnings after a live run. Offline snapshots and whitelist entries can also lack album data. |
 | Incomplete local scan | Check the affected-file list, permissions, tags, and filename format. |
 | Malformed whitelist | Correct the TOML or use Load whitelist to check a replacement. |
 | Unsupported chart markup | Retry later. The parser can require an update. |

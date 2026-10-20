@@ -42,14 +42,15 @@ Snapshot fetch_chart(Transport &transport, std::size_t top,
     validate_chart(snapshot.songs, top);
     return snapshot;
 }
-void enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
-                   const std::function<std::unique_ptr<Transport>()> &factory,
-                   std::size_t workers) {
+std::vector<std::string> enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
+                                     const std::function<std::unique_ptr<Transport>()> &factory,
+                                     std::size_t workers) {
     workers = std::min(workers, max_web_workers);
     std::vector<std::size_t> jobs;
     for (const auto &row : missing)
         if (row.song.album.empty())
             jobs.push_back(row.song.rank - 1);
+    std::vector<std::string> failures(jobs.size());
     std::atomic_size_t next{};
     std::atomic_bool blocked{};
     std::vector<std::jthread> threads;
@@ -63,13 +64,33 @@ void enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
                         break;
                     check_cancelled();
                     auto &song = snapshot.songs[jobs[task]];
-                    try {
-                        song.album = parse_album(transport->fetch(song.url));
-                        if (song.album.empty())
-                            log("Album unavailable or ambiguous: " + song.title);
-                    } catch (const std::exception &error) {
-                        log("Album lookup warning: " + std::string(error.what()));
-                        blocked.store(true);
+                    for (unsigned attempt = 1; attempt <= 3 && !blocked.load(); ++attempt) {
+                        check_cancelled();
+                        try {
+                            auto html = transport->fetch(song.url);
+                            if (challenged(html))
+                                throw VerificationRequired("RYM security check received during album lookup.");
+                            auto album = parse_album(html);
+                            if (!album.empty()) {
+                                song.album = std::move(album);
+                                break;
+                            }
+                            failures[task] = "No unique supported album metadata.";
+                        } catch (const VerificationRequired &error) {
+                            failures[task] = error.what();
+                            blocked.store(true);
+                            break;
+                        } catch (const SignInRequired &error) {
+                            failures[task] = error.what();
+                            blocked.store(true);
+                            break;
+                        } catch (const std::exception &error) {
+                            check_cancelled();
+                            failures[task] = error.what();
+                        }
+                        if (attempt < 3 && !blocked.load())
+                            log("Retrying album lookup (" + std::to_string(attempt + 1) +
+                                "/3): " + song.title);
                     }
                 }
             } catch (const std::exception &error) {
@@ -79,5 +100,18 @@ void enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
         });
     threads.clear();
     check_cancelled();
+    std::vector<std::string> warnings;
+    for (std::size_t task = 0; task < jobs.size(); ++task) {
+        const auto &song = snapshot.songs[jobs[task]];
+        if (!song.album.empty())
+            continue;
+        auto reason = failures[task].empty() ? "Lookup stopped before album metadata was available."
+                                              : failures[task];
+        auto warning = "Album unavailable for #" + std::to_string(song.rank) + " " + song.title +
+                       ": " + reason;
+        log(warning);
+        warnings.push_back(std::move(warning));
+    }
+    return warnings;
 }
 }

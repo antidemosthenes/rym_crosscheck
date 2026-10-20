@@ -6,6 +6,7 @@
 #include "rym_crosscheck/rym/parser.hpp"
 #include "rym_crosscheck/storage/whitelist.hpp"
 #include <algorithm>
+#include <array>
 #include <condition_variable>
 #include <functional>
 #include <iostream>
@@ -1474,6 +1475,21 @@ void parsing() {
             "JSON-LD album");
     require(rym::parse_album(rym::read_file(fixture / "song-current.html")) == "Electric Ladyland",
             "Current authoritative song header album");
+    require(rym::parse_album("<script type='application/ld+json'>{\"inAlbum\":{\"name\":\"Unknown\"}}</script>") == "Unknown",
+            "A real album named Unknown remains valid metadata");
+    for (auto name : {"", " ", "\\u00a0", "\\u0000", "\\ud800", "\\t\\n"}) {
+        auto html = std::string("<script type='application/ld+json'>{\"inAlbum\":{\"name\":\"") +
+                    name + "\"}}</script>";
+        require(rym::parse_album(html).empty(), "Invalid or blank album metadata remains unavailable");
+    }
+    require(rym::parse_album("<div class='song_album'>First</div><div class='song_album'>Second</div>").empty(),
+            "Ambiguous album metadata cannot select an arbitrary release");
+    throws([] { rym::parse_album("<title>Just a moment...</title>"); });
+    for (auto field : {"Alpha &amp; Omega", "Example Artist"}) {
+        auto invalid = rym::read_file(fixture / "chart.html");
+        invalid.replace(invalid.find(field), std::string_view(field).size(), " ");
+        throws([&] { rym::parse_chart(invalid, "https://rateyourmusic.com/charts/top/song/all-time/"); });
+    }
     throws([&] { rym::validate_chart(page.songs, 3); });
     throws(
         [] { rym::parse_chart("<title>Just a moment...</title>", "https://rateyourmusic.com/"); });
@@ -1750,6 +1766,109 @@ void album_workers() {
     std::stop_source restricted;
     restricted.request_stop();
     throws([&] { pacer.wait(restricted.get_token()); });
+}
+void album_retries() {
+    class Mock final : public rym::Transport {
+        std::function<std::string(std::string_view)> fetch_;
+      public:
+        explicit Mock(std::function<std::string(std::string_view)> fetch) : fetch_(std::move(fetch)) {}
+        std::string fetch(std::string_view url) override { return fetch_(url); }
+    };
+    auto prepare = [] {
+        rym::Snapshot snapshot;
+        for (std::size_t rank = 1; rank <= 3; ++rank) {
+            auto item = song("Song " + std::to_string(rank), {"Band"});
+            item.rank = rank;
+            item.url = "https://rateyourmusic.com/song/band/song-" + std::to_string(rank) + "/";
+            if (rank == 3)
+                item.album = "Chart Album";
+            snapshot.songs.push_back(std::move(item));
+        }
+        return snapshot;
+    };
+    auto missing_rows = [](const rym::Snapshot &snapshot) {
+        std::vector<rym::Missing> missing;
+        for (const auto &item : snapshot.songs)
+            missing.push_back({item, {}});
+        return missing;
+    };
+    auto album = [](std::string_view name) {
+        return "<div class='song_album'>" + std::string(name) + "</div>";
+    };
+    auto snapshot = prepare();
+    std::array<unsigned, 3> visits{};
+    auto warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+        return std::make_unique<Mock>([&](std::string_view url) {
+            auto id = url == snapshot.songs[0].url ? 0 : 1;
+            auto attempt = ++visits[id];
+            if (id == 0 && attempt == 1)
+                throw rym::Error("Temporary navigation failure");
+            return id == 0 && attempt == 2 ? std::string("<html>Loading</html>") : album("Recovered Album");
+        });
+    }, 1);
+    require(warnings.empty() && visits == std::array<unsigned, 3>{3, 1, 0} &&
+                snapshot.songs[0].album == "Recovered Album" && snapshot.songs[2].album == "Chart Album",
+            "Transient album failures retry at most twice without refetching known albums");
+    snapshot = prepare();
+    visits = {};
+    warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+        return std::make_unique<Mock>([&](std::string_view url) {
+            auto id = url == snapshot.songs[0].url ? 0 : 1;
+            ++visits[id];
+            if (id == 0)
+                throw rym::Error("Persistent navigation failure");
+            return album("Unknown");
+        });
+    }, 1);
+    require(visits == std::array<unsigned, 3>{3, 1, 0} && warnings.size() == 1 &&
+                warnings[0].find("#1 Song 1") != warnings[0].npos &&
+                warnings[0].find("Persistent navigation failure") != warnings[0].npos &&
+                snapshot.songs[1].album == "Unknown",
+            "An exhausted album job cannot cancel unrelated jobs or reject a real Unknown album");
+    snapshot = prepare();
+    visits = {};
+    warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+        return std::make_unique<Mock>([&](std::string_view url) {
+            auto id = url == snapshot.songs[0].url ? 0 : 1;
+            ++visits[id];
+            return std::string("<div class='song_album'>First</div><div class='song_album'>Second</div>");
+        });
+    }, 1);
+    require(visits == std::array<unsigned, 3>{3, 3, 0} && warnings.size() == 2 &&
+                snapshot.songs[0].album.empty() && snapshot.songs[1].album.empty(),
+            "Persistent metadata ambiguity has a finite retry budget and preserves unavailable values");
+    for (unsigned restriction = 0; restriction < 3; ++restriction) {
+        snapshot = prepare();
+        unsigned calls{};
+        warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+            return std::make_unique<Mock>([&](std::string_view) -> std::string {
+                ++calls;
+                if (restriction == 0)
+                    throw rym::VerificationRequired("Security check");
+                if (restriction == 1)
+                    throw rym::SignInRequired("Sign in");
+                return "<title>Just a moment...</title>";
+            });
+        }, 1);
+        require(calls == 1 && warnings.size() == 2 && snapshot.songs[0].album.empty(),
+                "Access restrictions stop retries and queued album jobs immediately");
+    }
+    snapshot = prepare();
+    warnings = rym::enrich_albums(missing_rows(snapshot), snapshot,
+        []() -> std::unique_ptr<rym::Transport> { throw rym::Error("Worker initialization failure"); }, 1);
+    require(warnings.size() == 2, "Worker initialization failure produces saved metadata warnings");
+    unsigned calls{};
+    throws([&] {
+        rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+            return std::make_unique<Mock>([&](std::string_view) -> std::string {
+                ++calls;
+                rym::cancelled.store(true);
+                throw rym::Error("Cancelled during navigation");
+            });
+        }, 1);
+    });
+    rym::cancelled.store(false);
+    require(calls == 1, "Cancellation cannot retry album requests");
 }
 void tag_priority() {
     Temp temporary;
@@ -2118,6 +2237,7 @@ int main(int argc, char **argv) {
              {"browser reply ownership", browser_protocol},
              {"browser socket failures", browser_socket_tests},
              {"album workers", album_workers},
+             {"album retries", album_retries},
              {"tag priority", tag_priority},
              {"storage/scanning", storage_and_scan},
              {"CLI offline", cli_offline},

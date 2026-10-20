@@ -220,6 +220,8 @@ Ordinary records omit sparse review data. The source track vector must outlive i
 
 Local tag readers use a bounded queue and joined workers. Scanning overlaps chart retrieval.
 Album workers share pacing and cancellation. A restriction stops queued album requests.
+Other failures permit two further attempts per song. Missing or ambiguous album metadata follows the same limit.
+Successful chart albums need no extra request. Exhausted jobs do not stop unrelated lookups.
 
 Resource Acquisition Is Initialization (RAII) wrappers and smart pointers own handles, files, sockets, processes, and buffers.
 Nonthrowing accessors, arithmetic, callbacks, and moves use `noexcept`. Allocation, parsing, I/O, and cancellable scoring can throw.
@@ -243,6 +245,7 @@ HTML views stay within each reply's lifetime. Browser streams use the Windows nu
 
 Schema-1 JSON keeps all chart entries, ownership, original metadata, candidate values, warnings, counts, and whitelist data.
 Excluded chart entries remain available for later whitelist removal.
+Optional `metadata_warnings` records unavailable album lookups separately from local scan warnings. Older reports default to an empty list.
 
 Optional candidate flags are `version_gap`, `artist_gap`, `section_gap`, `compound_gap`, `annotation_gap`, `diacritic_gap`, and `notation_gap`.
 Older reports default missing flags to false. Raw caches remain compatible because each run rebuilds identities.

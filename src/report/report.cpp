@@ -143,6 +143,7 @@ boost::json::object report_fields(const Report &report) {
             {"identified", report.identified},
             {"reused", report.reused},
             {"warnings", strings(report.warnings)},
+            {"metadata_warnings", strings(report.metadata_warnings)},
             {"songs", std::move(songs)}};
 }
 }
@@ -172,6 +173,8 @@ Report parse_report(const boost::json::value &json) {
     if (result.reused > result.identified)
         throw Error("Invalid cached file count.");
     result.warnings = string_list(object.at("warnings"));
+    if (const auto *warnings = object.if_contains("metadata_warnings"))
+        result.metadata_warnings = string_list(*warnings);
     boost::unordered_flat_set<std::string> urls;
     urls.reserve(object.at("songs").as_array().size());
     result.songs.reserve(object.at("songs").as_array().size());
