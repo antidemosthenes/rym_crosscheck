@@ -1475,6 +1475,22 @@ void parsing() {
             "JSON-LD album");
     require(rym::parse_album(rym::read_file(fixture / "song-current.html")) == "Electric Ladyland",
             "Current authoritative song header album");
+    for (auto kind : {"album", "comp", "single", "ep", "mixtape"})
+        for (auto origin : {"", "https://rateyourmusic.com"}) {
+            auto html = std::string("<div class='page_song_header_info_rest'>Track 3 on ") +
+                        "<a class='album' href='" + origin + "/release/" + kind +
+                        "/artist/release/'>Associated Release</a></div>" +
+                        "<section><a class='album' href='/release/album/other/other/'>Other Release</a></section>";
+            require(rym::parse_album(html) == "Associated Release",
+                    "Primary release metadata accepts compilations and other RYM release categories");
+        }
+    require(rym::parse_album(
+                "<div class='page_song_header_info_rest'><a class='album' href='https://evil.example/release/comp/a/b/'>Wrong</a></div>").empty(),
+            "Off-site release links cannot supply primary album metadata");
+    require(rym::parse_album(
+                "<div class='page_song_header_info_rest'><a class='album' href='/release/comp/a/one/'>One</a>"
+                "<a class='album' href='/release/comp/a/two/'>Two</a></div>").empty(),
+            "Several distinct primary releases remain ambiguous");
     require(rym::parse_album("<script type='application/ld+json'>{\"inAlbum\":{\"name\":\"Unknown\"}}</script>") == "Unknown",
             "A real album named Unknown remains valid metadata");
     for (auto name : {"", " ", "\\u00a0", "\\u0000", "\\ud800", "\\t\\n"}) {
@@ -1535,6 +1551,20 @@ void parsing() {
     require(rym::browser_page_state(second, second, "loading", "<title>Just a moment...</title>") ==
                 State::verification,
             "Known challenge requests verification before document completion");
+    constexpr auto unicode_song = "https://rateyourmusic.com/song/坂本龍一/merry-christmas-mr-lawrence/";
+    constexpr auto encoded_song = "https://rateyourmusic.com/song/%E5%9D%82%E6%9C%AC%E9%BE%8D%E4%B8%80/merry-christmas-mr-lawrence/";
+    require(rym::browser_page_state(encoded_song, unicode_song, "complete", "Song page") == State::ready &&
+                rym::browser_page_state(unicode_song, encoded_song, "complete", "Song page") == State::ready,
+            "Browser-encoded Unicode paths cannot trigger a false access recovery");
+    require(rym::browser_page_state(
+                "https://rateyourmusic.com/song/%e5%9d%82%e6%9c%ac%e9%be%8d%e4%b8%80/%6Derry-christmas-mr-lawrence/#top",
+                unicode_song, "complete", "Song page") == State::ready,
+            "URI hex case and encoded unreserved bytes preserve page identity");
+    for (auto wrong : {"https://rateyourmusic.com/song/%25E5%259D%2582/merry-christmas-mr-lawrence/",
+                       "https://rateyourmusic.com/song/別名/merry-christmas-mr-lawrence/",
+                       "https://rateyourmusic.com/song/%E5%9D%82%E6%9C%AC%E9%BE%8D%E4%B8%80%2Fmerry-christmas-mr-lawrence/"})
+        require(rym::browser_page_state(wrong, unicode_song, "complete", "Song page") == State::loading,
+                "Double encoding, different artists, and encoded path separators cannot satisfy retrieval");
     throws([] { rym::song_url("https://evil.example/song/test/"); });
     throws([] { rym::song_url("https://rateyourmusic.com/artist/test/"); });
 }
@@ -1765,7 +1795,13 @@ void album_workers() {
     pacer.wait();
     std::stop_source restricted;
     restricted.request_stop();
-    throws([&] { pacer.wait(restricted.get_token()); });
+    bool stopped{};
+    try {
+        pacer.wait(restricted.get_token());
+    } catch (const rym::RequestGroupStopped &) {
+        stopped = true;
+    }
+    require(stopped, "Pacing distinguishes shared restrictions from independent navigation failures");
 }
 void album_retries() {
     class Mock final : public rym::Transport {
@@ -1856,7 +1892,8 @@ void album_retries() {
     snapshot = prepare();
     warnings = rym::enrich_albums(missing_rows(snapshot), snapshot,
         []() -> std::unique_ptr<rym::Transport> { throw rym::Error("Worker initialization failure"); }, 1);
-    require(warnings.size() == 2, "Worker initialization failure produces saved metadata warnings");
+    require(warnings.size() == 2 && warnings[0].find("Worker initialization failure") != warnings[0].npos,
+            "Worker initialization failure retains its cause in saved metadata warnings");
     unsigned calls{};
     throws([&] {
         rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
@@ -1869,6 +1906,234 @@ void album_retries() {
     });
     rym::cancelled.store(false);
     require(calls == 1, "Cancellation cannot retry album requests");
+}
+void album_worker_validation() {
+    auto item = song("Song", {"Band"});
+    rym::Snapshot snapshot{{item}, rym::now_seconds()};
+    std::vector<rym::Missing> missing{{item, {}}};
+    unsigned factories{};
+    auto factory = [&]() -> std::unique_ptr<rym::Transport> {
+        ++factories;
+        throw rym::Error("Worker creation failure");
+    };
+    rym::cancelled.store(true);
+    throws([&] { rym::enrich_albums(missing, snapshot, factory, 4); });
+    rym::cancelled.store(false);
+    require(factories == 0, "Cancellation before album lookup cannot create worker transports");
+    throws([&] { rym::enrich_albums(missing, snapshot, factory, 0); });
+    require(factories == 0, "Zero album workers cannot silently skip retrieval");
+    for (auto rank : {std::size_t{0}, std::size_t{2}}) {
+        auto invalid = missing;
+        invalid[0].song.rank = rank;
+        throws([&] { rym::enrich_albums(invalid, snapshot, factory, 1); });
+    }
+    auto invalid = missing;
+    invalid[0].song.url += "other/";
+    throws([&] { rym::enrich_albums(invalid, snapshot, factory, 1); });
+    invalid = missing;
+    invalid.push_back(missing[0]);
+    throws([&] { rym::enrich_albums(invalid, snapshot, factory, 4); });
+    auto invalid_snapshot = snapshot;
+    invalid_snapshot.songs[0].rank = 2;
+    throws([&] { rym::enrich_albums(missing, invalid_snapshot, factory, 1); });
+    throws([&] { rym::enrich_albums(missing, snapshot, {}, 1); });
+    require(factories == 0, "Invalid album jobs fail before creating transports or changing metadata");
+    snapshot.songs[0].album = "Known Album";
+    require(rym::enrich_albums(missing, snapshot, factory, 4).empty() && factories == 0 &&
+                snapshot.songs[0].album == "Known Album",
+            "The snapshot prevents a stale result row from refetching a known album");
+    snapshot.songs[0].album.clear();
+    missing[0].song.album = "Stale Album";
+    auto warnings = rym::enrich_albums(missing, snapshot, factory, 1);
+    require(factories == 1 && warnings.size() == 1 &&
+                warnings[0].find("Worker creation failure") != warnings[0].npos,
+            "The snapshot also selects albums missing from a stale result row");
+    warnings = rym::enrich_albums(missing, snapshot,
+        []() -> std::unique_ptr<rym::Transport> { return {}; }, 1);
+    require(warnings.size() == 1 && warnings[0].find("transport is unavailable") != warnings[0].npos,
+            "A null worker transport produces a saved warning instead of a null dereference");
+    require(rym::enrich_albums({}, snapshot, {}, 4).empty(),
+            "An empty album selection requires no transport factory");
+    class Mock final : public rym::Transport {
+        std::function<std::string(std::string_view)> fetch_;
+      public:
+        explicit Mock(std::function<std::string(std::string_view)> fetch) : fetch_(std::move(fetch)) {}
+        std::string fetch(std::string_view url) override { return fetch_(url); }
+    };
+    auto second = item;
+    second.rank = 2;
+    second.url += "second/";
+    snapshot.songs.push_back(second);
+    std::vector<rym::Missing> unordered{{second, {}}, {item, {}}};
+    std::vector<std::string> fetched;
+    warnings = rym::enrich_albums(unordered, snapshot, [&] {
+        return std::make_unique<Mock>([&](std::string_view url) {
+            fetched.emplace_back(url);
+            return std::string("<div class='song_album'>") +
+                   (url == item.url ? "First Album" : "Second Album") + "</div>";
+        });
+    }, 1);
+    require(warnings.empty() && fetched == std::vector<std::string>{item.url, second.url} &&
+                snapshot.songs[0].album == "First Album" && snapshot.songs[1].album == "Second Album",
+            "An unordered selection keeps albums attached to their validated chart ranks");
+}
+void album_access_recovery() {
+    struct State {
+        std::atomic_size_t live{}, resumed_peak{};
+        std::atomic_uint generation{};
+    } state;
+    class Mock final : public rym::Transport {
+        State &state_;
+        std::function<std::string(std::string_view)> fetch_;
+      public:
+        Mock(State &state, std::function<std::string(std::string_view)> fetch)
+            : state_(state), fetch_(std::move(fetch)) {
+            auto live = ++state_.live;
+            if (state_.generation) {
+                auto peak = state_.resumed_peak.load();
+                while (peak < live && !state_.resumed_peak.compare_exchange_weak(peak, live)) {}
+            }
+        }
+        ~Mock() noexcept override { --state_.live; }
+        std::string fetch(std::string_view url) override { return fetch_(url); }
+    };
+    auto prepare = [] {
+        rym::Snapshot snapshot;
+        for (std::size_t rank = 1; rank <= 6; ++rank) {
+            auto item = song("Song " + std::to_string(rank), {"Band"});
+            item.rank = rank;
+            item.url = "https://rateyourmusic.com/song/band/song-" + std::to_string(rank) + "/";
+            if (rank == 6)
+                item.album = "Chart Album";
+            snapshot.songs.push_back(std::move(item));
+        }
+        return snapshot;
+    };
+    auto missing_rows = [](const auto &snapshot) {
+        std::vector<rym::Missing> missing;
+        for (const auto &item : snapshot.songs)
+            missing.push_back({item, {}});
+        return missing;
+    };
+    const std::string album = "<div class='song_album'>Recovered Album</div>";
+    for (bool security_first : {false, true}) {
+        auto snapshot = prepare();
+        std::array<unsigned, 6> visits{};
+        unsigned prompts{}, data_attempts{};
+        state.generation = 0;
+        auto warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+            return std::make_unique<Mock>(state, [&](std::string_view url) {
+                auto id = static_cast<std::size_t>(std::ranges::find(snapshot.songs, url, &rym::Song::url) - snapshot.songs.begin());
+                ++visits[id];
+                if (id == 1) {
+                    auto generation = state.generation.load();
+                    if (generation < 2) {
+                        if ((generation == 0) == security_first)
+                            throw rym::VerificationRequired("Security check");
+                        throw rym::SignInRequired("Sign in");
+                    }
+                    if (++data_attempts == 1)
+                        throw rym::Error("Temporary navigation failure");
+                    if (data_attempts == 2)
+                        return std::string("<html>Loading</html>");
+                }
+                return album;
+            });
+        }, 1, [&](std::string_view url, rym::AccessReason reason) {
+            require(state.live == 0 && url == snapshot.songs[1].url,
+                    "Album recovery waits for transport teardown and uses the affected song URL");
+            require((reason == rym::AccessReason::verification) == ((prompts == 0) == security_first),
+                    "Album recovery preserves security and sign-in transition order");
+            ++prompts;
+            ++state.generation;
+        });
+        require(warnings.empty() && prompts == 2 && visits == std::array<unsigned, 6>{1, 5, 1, 1, 1, 0} &&
+                    data_attempts == 3 && state.live == 0,
+                "Access recovery retains successful albums and the bounded data retry budget");
+    }
+    for (bool failed_handoff : {false, true}) {
+        auto snapshot = prepare();
+        unsigned calls{}, prompts{};
+        auto warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+            return std::make_unique<Mock>(state, [&](std::string_view) -> std::string {
+                ++calls;
+                throw rym::VerificationRequired("Repeated security check");
+            });
+        }, 1, [&](std::string_view, rym::AccessReason) {
+            require(state.live == 0, "Failed recovery also runs after transport teardown");
+            ++prompts;
+            if (failed_handoff)
+                throw rym::Error("Access timed out");
+        });
+        require(prompts == 1 && calls == (failed_handoff ? 1u : 2u) && warnings.size() == 5 &&
+                    warnings.back().find(snapshot.songs[0].url) != warnings.back().npos &&
+                    warnings.back().find(failed_handoff ? "Access timed out" : "recovery limit") != warnings.back().npos,
+                "Persistent restriction has one recovery and one shared cause for unfinished songs");
+    }
+    auto snapshot = prepare();
+    unsigned first_visits{};
+    state.generation = 0;
+    auto budget_warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+        return std::make_unique<Mock>(state, [&](std::string_view url) -> std::string {
+            if (url != snapshot.songs[0].url)
+                return album;
+            if (++first_visits == 3)
+                throw rym::VerificationRequired("Security check after temporary failures");
+            throw rym::Error("Persistent metadata failure");
+        });
+    }, 1, [&](std::string_view, rym::AccessReason) { ++state.generation; });
+    require(first_visits == 4 && state.generation == 1 && budget_warnings.size() == 1,
+            "Metadata attempts before an access restriction still count after recovery");
+    snapshot = prepare();
+    state.generation = 0;
+    state.resumed_peak = 0;
+    std::mutex mutex;
+    std::condition_variable ready;
+    unsigned entered{}, prompts{};
+    auto warnings = rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+        return std::make_unique<Mock>(state, [&](std::string_view) -> std::string {
+            if (state.generation)
+                return album;
+            std::unique_lock lock(mutex);
+            auto first = entered++ == 0;
+            ready.notify_all();
+            if (!ready.wait_for(lock, std::chrono::seconds(2), [&] { return entered == 3; }))
+                throw rym::Error("Album recovery rendezvous timed out");
+            if (first)
+                throw rym::VerificationRequired("Security check");
+            throw rym::RequestGroupStopped("Request group stopped.");
+        });
+    }, 3, [&](std::string_view, rym::AccessReason) {
+        require(state.live == 0 && entered == 3,
+                "Concurrent restrictions join all affected workers before browser recovery");
+        ++prompts;
+        ++state.generation;
+    });
+    require(warnings.empty() && prompts == 1 && state.resumed_peak == 1 && state.live == 0,
+            "Interrupted and queued album jobs resume serially after a shared restriction");
+    snapshot = prepare();
+    unsigned calls{};
+    throws([&] {
+        rym::enrich_albums(missing_rows(snapshot), snapshot, [&] {
+            return std::make_unique<Mock>(state, [&](std::string_view) -> std::string {
+                ++calls;
+                throw rym::VerificationRequired("Security check");
+            });
+        }, 1, [&](std::string_view, rym::AccessReason) { rym::cancelled.store(true); });
+    });
+    rym::cancelled.store(false);
+    require(calls == 1 && state.live == 0, "Cancellation during album recovery cannot resume requests");
+    rym::Pacer pacer(std::chrono::milliseconds(0));
+    pacer.increase_interval(std::chrono::milliseconds(20));
+    auto start = std::chrono::steady_clock::now();
+    pacer.wait();
+    require(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(20),
+            "Slower pacing includes a cooldown before the first resumed request");
+    start = std::chrono::steady_clock::now();
+    pacer.increase_interval(std::chrono::milliseconds(0));
+    pacer.wait();
+    require(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(20),
+            "Access recovery cannot reduce a configured request delay");
 }
 void tag_priority() {
     Temp temporary;
@@ -2238,6 +2503,8 @@ int main(int argc, char **argv) {
              {"browser socket failures", browser_socket_tests},
              {"album workers", album_workers},
              {"album retries", album_retries},
+             {"album worker validation", album_worker_validation},
+             {"album access recovery", album_access_recovery},
              {"tag priority", tag_priority},
              {"storage/scanning", storage_and_scan},
              {"CLI offline", cli_offline},

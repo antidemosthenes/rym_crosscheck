@@ -278,12 +278,15 @@ std::string parse_album(std::string_view html) {
     visit(document.root(), [&](auto *node) {
         if (has_class(node, "page_song_header_info_rest"))
             visit(node, [&](auto *child) {
-                if (has_class(child, "album") &&
-                    attribute(child, "href").starts_with("/release/album/")) {
-                    auto name = album_text(locale_text(child));
-                    if (!name.empty())
-                        header_albums.insert(std::move(name));
-                }
+                if (!has_class(child, "album"))
+                    return;
+                auto href = attribute(child, "href");
+                if (!href.starts_with("/release/") &&
+                    !href.starts_with("https://rateyourmusic.com/release/"))
+                    return;
+                auto name = album_text(locale_text(child));
+                if (!name.empty())
+                    header_albums.insert(std::move(name));
             });
         if (has_class(node, "song_album") || has_class(node, "page_song_album")) {
             auto album = album_text(locale_text(node));

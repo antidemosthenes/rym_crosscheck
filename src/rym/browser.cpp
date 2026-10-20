@@ -7,9 +7,44 @@
 #include <charconv>
 #include <conio.h>
 #include <fstream>
+#include <utility>
 
 namespace rym {
 namespace {
+bool same_url_text(std::string_view left, std::string_view right) noexcept {
+    if (left == right)
+        return true;
+    auto next = [](std::string_view &value) noexcept {
+        auto point = static_cast<unsigned char>(value.front());
+        auto hex = [](unsigned char c) noexcept -> int {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            return -1;
+        };
+        if (point == '%' && value.size() >= 3) {
+            auto high = hex(value[1]), low = hex(value[2]);
+            if (high >= 0 && low >= 0) {
+                point = static_cast<unsigned char>(16 * high + low);
+                value.remove_prefix(3);
+                auto unreserved = (point >= 'a' && point <= 'z') ||
+                                  (point >= 'A' && point <= 'Z') ||
+                                  (point >= '0' && point <= '9') ||
+                                  point == '-' || point == '.' || point == '_' || point == '~';
+                return std::pair{point, point < 0x80 && !unreserved};
+            }
+        }
+        value.remove_prefix(1);
+        return std::pair{point, false};
+    };
+    while (!left.empty() && !right.empty())
+        if (next(left) != next(right))
+            return false;
+    return left.empty() && right.empty();
+}
 std::wstring quote(std::wstring_view argument) {
     std::wstring result = L"\"";
     std::size_t slashes{};
@@ -273,20 +308,20 @@ void resolve_browser_access(const std::filesystem::path &path, std::chrono::seco
     if (ResumeThread(thread.get()) == DWORD(-1))
         throw Error("Cannot resume the access browser.");
     log("If RYM shows its own restriction form, complete reCAPTCHA, click Submit, "
-        "and wait for the chart to appear before continuing. Comments and email are optional.");
+        "and wait for the requested page to appear before continuing. Comments and email are optional.");
     log("This window opens the requested RYM URL with the saved session. "
         "If only the normal homepage appears without an access prompt, close the window "
-        "to retry chart retrieval.");
+        "to retry retrieval.");
     if (reason == AccessReason::sign_in)
         log("RYM requested sign-in. Sign in manually in this dedicated Edge window and wait for "
-            "the chart or your signed-in homepage. Choose Remember me if offered and desired. "
-            "The program will retry the chart using the session retained inside Edge.");
+            "the requested page or your signed-in homepage. Choose Remember me if offered and desired. "
+            "The program will retry retrieval using the session retained inside Edge.");
     if (launcher)
         log("Complete the requested RYM access steps in Edge, then close that browser window "
-            "to continue. For security checks, wait for the chart first. Cookies are retained.");
+            "to continue. For security checks, wait for the requested page first. Cookies are retained.");
     else
         log("Complete the requested RYM access steps in Edge, then press Enter in this terminal "
-            "or close that browser window. For security checks, wait for the chart first. "
+            "or close that browser window. For security checks, wait for the requested page first. "
             "The program will reuse its cookies.");
     auto deadline = std::chrono::steady_clock::now() + timeout;
     while (std::chrono::steady_clock::now() < deadline) {
@@ -304,8 +339,8 @@ void resolve_browser_access(const std::filesystem::path &path, std::chrono::seco
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     throw Error(reason == AccessReason::sign_in
-                    ? "RYM sign-in timed out; previous report preserved."
-                    : "Normal-browser verification timed out; previous report preserved.");
+                    ? "RYM sign-in timed out."
+                    : "Normal-browser verification timed out.");
 }
 Browser::Browser(const std::filesystem::path &profile, Pacer &pacer, bool launcher)
     : data_(std::make_unique<Data>(std::make_shared<Session>(prepare_profile(profile), pacer))),
@@ -335,7 +370,7 @@ BrowserPageState browser_page_state(std::string_view current, std::string_view r
             value.remove_suffix(1);
         return value;
     };
-    if (!html.empty() && canonical(current) == canonical(requested) && ready == "complete" &&
+    if (!html.empty() && same_url_text(canonical(current), canonical(requested)) && ready == "complete" &&
         (requested.find("/charts/") == requested.npos ||
          html.find("page_charts_section_charts_item") != html.npos))
         return BrowserPageState::ready;
@@ -428,8 +463,7 @@ std::string Browser::fetch(std::string_view url) {
         if (status == BrowserPageState::sign_in) {
             state.restricted.request_stop();
             throw SignInRequired("RYM redirected " + target + " to " + std::string(current) +
-                                 " and returned a sign-in page instead of chart data. "
-                                 "The previous report is preserved.");
+                                 " and returned a sign-in page instead of the requested data.");
         }
         if (status == BrowserPageState::verification) {
             state.restricted.request_stop();

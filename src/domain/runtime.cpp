@@ -1,4 +1,5 @@
 #include "rym_crosscheck/domain/runtime.hpp"
+#include <algorithm>
 #include <cstddef>
 #include <io.h>
 #include <iostream>
@@ -151,7 +152,7 @@ void Pacer::wait(std::stop_token stop) {
     auto check = [&] {
         check_cancelled();
         if (stop.stop_requested())
-            throw Error("Request group stopped.");
+            throw RequestGroupStopped("Request group stopped.");
     };
     auto current = std::chrono::steady_clock::now();
     while (current < next_) {
@@ -163,5 +164,10 @@ void Pacer::wait(std::stop_token stop) {
     }
     check();
     next_ = current + interval_;
+}
+void Pacer::increase_interval(std::chrono::milliseconds minimum) {
+    std::lock_guard lock(mutex_);
+    interval_ = std::max(interval_, minimum);
+    next_ = std::max(next_, std::chrono::steady_clock::now() + interval_);
 }
 }

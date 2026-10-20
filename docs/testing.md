@@ -38,14 +38,17 @@ Temporary files use disposable test directories.
 | Normalization | Unicode, quotes, punctuation, remasters, included sections, recording labels, complete credits, and malformed metadata. |
 | Exact ownership | Shared identity keys, strict whitelist pairs, alternate principals in duplicates, edition grouping, and unchanged validation failures. |
 | Review evidence | All reported matching examples. Unknown annotations, slash and spaced-dash components, whole-word artist overlap, and combined reasons. |
-| Latin spelling | Bôa/BoA, title accents, reordered credits, literal separators, structured-credit collisions, non-Latin preservation, and original-text scores. |
-| Title notation | Nujabes example, numbered aliases, featured credits, preserved digits, malformed text, combined rules, original scores, and older reports. |
+| Latin spelling | Latin accents, reordered credits, literal separators, structured-credit collisions, non-Latin preservation, and original-text scores. |
+| Title notation | Numbered aliases, featured credits, preserved digits, malformed text, combined rules, original scores, and older reports. |
 | Retrieval and scoring | Indexed/exhaustive equality, combined review rules, repeated trigrams, short names, thresholds, shuffled records, long strings, and unlimited edit budgets. |
 | Ranking | Exact rational means, overflow-safe products, deterministic ties, complete ranking bounds, and three-candidate capacity. |
 | Component storage | More components and deeper nesting than inline capacity. Storage growth must preserve all valid evidence. |
 | Reports | JSON round trips, Unicode, hostile metadata, warnings, offline context, relative paths, and optional flags in old reports. |
 | Chart access | Pagination, security/sign-in transitions in either order, retry limits, timeout, cancellation, and noninteractive rejection. |
-| Album workers | Worker limits, pacing, successful single-attempt jobs, bounded retries, invalid metadata, restrictions, cancellation, and saved metadata warnings. |
+| Page identity | Unicode paths, percent encoding, hex case, fragments, and rejection of encoded separators or different paths. |
+| Album parsing | Primary release links across RYM release categories, absolute links, ambiguity, off-site links, and unrelated page references. |
+| Album workers | Worker limits, pacing, bounded metadata retries, coordinated access recovery, interrupted queues, retained successes, recovery limits, cancellation, and saved warnings. |
+| Album job validation | Invalid ranks, duplicate jobs, stale result metadata, empty queues, null transports, and cancellation before worker creation. |
 | Local storage | Tags, filename format, cache reuse, eviction, invalid snapshots, explicit clear failures, and previous-report preservation. |
 | CLI and launcher | Option ranges, removed arguments, paths, settings, transient resets, Windows quoting, run locks, progress, and hidden children. |
 | Whitelist and imports | Complete replacement, external differences, malformed files, source preservation, concurrent saves, newer generations, and partial success. |

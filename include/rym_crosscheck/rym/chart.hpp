@@ -9,5 +9,6 @@ Snapshot fetch_chart(Transport &transport, std::size_t top,
                      const std::function<void(std::size_t)> &progress = {});
 std::vector<std::string> enrich_albums(const std::vector<Missing> &missing, Snapshot &snapshot,
                                      const std::function<std::unique_ptr<Transport>()> &factory,
-                                     std::size_t workers);
+                                     std::size_t workers,
+                                     const std::function<void(std::string_view, AccessReason)> &recover = {});
 }

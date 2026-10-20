@@ -38,18 +38,19 @@ The command-line program (CLI) scans MP3, FLAC, and M4A files while it retrieves
 If artist or title tags are absent, it tries the `Artist - Title` filename format. It skips directory links.
 Unchanged files reuse cached tags.
 
-Chart and song retrieval stays invisible. A dedicated Edge window opens for access recovery if hidden chart retrieval fails.
+Chart and song retrieval stays invisible. A dedicated Edge window opens for access recovery when RYM blocks a chart or album request.
 
 | Page | Required action |
 | --- | --- |
-| Cloudflare check | Complete the check. Wait for the chart. |
-| RYM restriction form | Complete reCAPTCHA. Select **Submit**. Wait for the chart. |
+| Cloudflare check | Complete the check. Wait for the requested page. |
+| RYM restriction form | Complete reCAPTCHA. Select **Submit**. Wait for the requested page. |
 | RYM sign-in | Sign in manually. The signed-in homepage is sufficient. |
-| Normal homepage without an access prompt | Close the window. The program retries the requested chart with the saved session. |
+| Normal homepage without an access prompt | Close the window. The program retries the requested page with the saved session. |
 
 **Close that Edge window to continue.** Terminal users can also press Enter.
 Edge keeps credentials and cookies in its persistent profile. The program does not solve CAPTCHAs or enter credentials.
 The [runtime guide](docs/runtime.md#access-recovery) explains the 10-second hidden-page wait and recovery limits.
+After album access recovery, unfinished lookups resume with one worker and at least 2,000 ms between request starts.
 
 The Running screen shows the stage, counts, elapsed time, and Cancel. Chart counts and local file counts are separate.
 For example, `40 / 200` chart songs does not describe the library size.
@@ -88,7 +89,9 @@ Titles also normalize outer quotes, slash spacing, and explicit remaster suffixe
 Exact ownership requires the title, complete artist credits, recording version, and included sections to match.
 Artist order can differ in a structured list. The program does not split names at commas or `&`.
 The principal artist is the first artist in the recorded list.
+
 **Albums have zero matching weight.** A compilation can contain an owned song.
+The Album column uses RYM's associated release, including compilations, singles, and EPs.
 
 Review comparisons keep the original metadata:
 
@@ -100,7 +103,7 @@ Review comparisons keep the original metadata:
 | Numbered labels | Expand `Pt` to `Part`, `Vol` to `Volume`, and `No` to `Number` before digits. Accept optional periods and spacing. |
 | Title credits | Remove trailing `feat`, `ft`, `feature`, or `featuring` text from a review copy. Accept an optional period. |
 | Artist overlap | Require an exact base title and a contained phrase with at least two meaningful words. |
-| Artist slash | Permit `/` as a review boundary. Keep the complete artist identity. `AC/DC` does not imply separate artists. |
+| Artist slash | Permit `/` as a review boundary. Keep the complete artist identity. A slash does not establish separate artist credits. |
 | Latin diacritics | Compare a separate spelling, such as `ô` → `o`. Require equal complete titles or equal complete credits. |
 
 Annotation removal accepts unknown labels. Empty bases and malformed pairs do not qualify.
@@ -115,15 +118,16 @@ Title review uses this order:
 5. Keep the whole title. Create a base by removing balanced annotations.
 6. Normalize resulting formatting before slash or spaced-dash segmentation.
 
-The new notation rule requires equal complete forms or an existing complete-component relation.
+Title notation matching requires equal complete forms or an existing complete-component relation.
 It does not expand arbitrary acronyms, Roman numerals, or written numbers. Digit sequences retain leading zeros.
+
 Title-credit removal requires a nonempty title and guest credit. It also accepts a final balanced credit block.
 Artist tags remain unchanged. Existing recording checks still apply.
 
 Recording conflicts normally block suggestions. Equal complete bases after annotation removal can expose recording conflicts for review.
 A component match alone cannot override a recording conflict. Latin spelling preserves non-Latin text and exact whitelist identities.
 
-### Labels and examples
+### Result labels
 
 | Label | Meaning |
 | --- | --- |
@@ -140,24 +144,6 @@ A component match alone cannot override a recording conflict. Latin spelling pre
 | Unavailable album | Album metadata is unavailable or ambiguous. Live lookups use up to three attempts. Persistent failures appear in metadata warnings. |
 | Local scan incomplete | The scan cannot resolve some local files or directories. |
 
-| RYM metadata | Local metadata | Result |
-| --- | --- | --- |
-| `"Heroes"` | `Heroes`, same artist | Owned |
-| `Weird Fishes / Arpeggi` | `Weird Fishes/ Arpeggi`, same artist | Owned |
-| `War Pigs` | `War Pigs/Luke's Wall`, same artist | Needs review: Compound title differs |
-| `Disorder` | `Disorder - 2019 Digital Master`, same artist | Needs review: Compound title differs |
-| `War Pigs` | `War Pigs [Bonus]/Luke's Wall`, same artist | Needs review: Annotations differ, Compound title differs |
-| `Title (Including 'A' and 'B')` | `Title`, same artist | Needs review: Included sections differ |
-| `Enjoy the Silence` | `Enjoy the Silence [Single Version]`, same artist | Needs review: Version differs |
-| `Move On Up` | `Move on Up (Extended Version)`, Curtis Mayfield | Needs review: Version differs |
-| `Song` | `Song [Unknown label]`, same artist | Needs review: Annotations differ |
-| `Song` | `Song (Live)`, same artist | Needs review: Version differs, Annotations differ |
-| `All Along the Watchtower`, The Jimi Hendrix Experience | Same title, Jimi Hendrix | Needs review: Artist name overlap |
-| `I'm God`, Clams Casino | Same title, Clams Casino/ Imogen Heap | Needs review: Artist name overlap |
-| `Duvet`, Bôa | Same title, BoA | Needs review: Diacritics differ |
-| `Luv (Sic.) Part 3`, Nujabes | `Luv (Sic.) Pt.3 feat. Shing02`, Nujabes | Needs review: Title notation differs |
-
-The King Crimson included-section examples require review when local section names are absent.
 Equivalent section lists can match despite differences in quotes or separators. Supported separators are `and`, `&`, and commas.
 
 Scores measure text similarity, not ownership probability. Original normalized text supplies diacritic and notation scores.
@@ -224,7 +210,7 @@ The active file is `data/whitelist.toml`. The CLI creates an empty file if this 
 
 ```toml
 [[songs]]
-url = "https://rateyourmusic.com/song/radiohead/paranoid-android/"
+url = "https://rateyourmusic.com/song/artist-slug/song-slug/"
 
 [[songs]]
 title = "Example song"

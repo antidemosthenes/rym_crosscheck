@@ -111,36 +111,40 @@ int application(const std::vector<std::string> &arguments,
                                             {"chart_songs", count},
                                             {"top", top}});
         };
+        std::filesystem::path selected_profile;
+        auto recover_access = [&](std::string_view url, AccessReason reason, bool albums) {
+            transport.reset();
+            if (channel)
+                channel->emit(
+                    reason == AccessReason::sign_in ? "sign_in" : "verification",
+                    {{"message", reason == AccessReason::sign_in
+                                     ? "Sign in to RYM in Edge. Once the requested page or your "
+                                       "signed-in homepage appears, close that Edge window to continue."
+                                     : "Complete any RYM security check in Edge. If shown, click "
+                                       "Submit after reCAPTCHA. Wait for the requested page, then "
+                                       "close Edge to continue. If only the normal homepage appears "
+                                       "without an access prompt, close Edge to retry retrieval."}});
+            resolve_browser_access(selected_profile, std::chrono::seconds(verification),
+                                   channel != nullptr, url, reason);
+            if (albums)
+                pacer.increase_interval(std::chrono::milliseconds(2000));
+            transport = std::make_unique<Browser>(selected_profile, pacer, channel != nullptr);
+            if (channel)
+                channel->emit(albums ? "albums" : "acquiring",
+                              {{"message", albums ? "Resuming album lookups with one worker"
+                                                  : "Edge window closed; retrieving chart"}});
+        };
         if (offline) {
             snapshot = cache.load_snapshot(top);
             chart_progress(snapshot.songs.size());
         } else {
-            auto selected_profile =
+            selected_profile =
                 profile.empty() ? default_profile() : std::filesystem::path(wide(profile));
             transport = std::make_unique<Browser>(selected_profile, pacer, channel != nullptr);
             AccessTransport chart_transport(
                 [&](std::string_view url) { return transport->fetch(url); },
                 [&](std::string_view url, AccessReason reason) {
-                    transport.reset();
-                    if (channel)
-                        channel->emit(
-                            reason == AccessReason::sign_in ? "sign_in" : "verification",
-                            {{"message", reason == AccessReason::sign_in
-                                             ? "Sign in to RYM in Edge. Once the chart or your "
-                                               "signed-in homepage appears, close that Edge "
-                                               "window to continue."
-                                             : "Complete any RYM security check in Edge. If shown, "
-                                               "click Submit after reCAPTCHA. Wait for the chart, "
-                                               "then close Edge to continue. If only the normal "
-                                               "homepage appears without an access prompt, close "
-                                               "Edge to retry chart retrieval."}});
-                    resolve_browser_access(selected_profile, std::chrono::seconds(verification),
-                                           channel != nullptr, url, reason);
-                    if (channel)
-                        channel->emit("acquiring",
-                                      {{"message", "Edge window closed; retrieving chart"}});
-                    transport =
-                        std::make_unique<Browser>(selected_profile, pacer, channel != nullptr);
+                    recover_access(url, reason, false);
                 });
             snapshot = fetch_chart(chart_transport, top, chart_progress);
         }
@@ -163,7 +167,13 @@ int application(const std::vector<std::string> &arguments,
                 channel->emit("albums", {{"message", "Looking up associated albums"},
                                          {"results", missing.size()}});
             auto factory = [&] { return transport->fork(); };
-            report.metadata_warnings = enrich_albums(missing, snapshot, factory, web_workers);
+            std::function<void(std::string_view, AccessReason)> album_recovery;
+            if (interactive() || channel)
+                album_recovery = [&](std::string_view url, AccessReason reason) {
+                    recover_access(url, reason, true);
+                };
+            report.metadata_warnings =
+                enrich_albums(missing, snapshot, factory, web_workers, album_recovery);
             for (auto &row : report.songs)
                 row.song.album = snapshot.songs[row.song.rank - 1].album;
         }

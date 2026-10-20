@@ -17,6 +17,9 @@ namespace rym {
 class Error : public std::runtime_error {
     using std::runtime_error::runtime_error;
 };
+class RequestGroupStopped : public Error {
+    using Error::Error;
+};
 extern std::atomic_bool cancelled;
 void check_cancelled();
 void install_cancellation() noexcept;
@@ -65,5 +68,6 @@ class Pacer {
   public:
     explicit Pacer(std::chrono::milliseconds interval) noexcept : interval_(interval) {}
     void wait(std::stop_token stop = {});
+    void increase_interval(std::chrono::milliseconds minimum);
 };
 }

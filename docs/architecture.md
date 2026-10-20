@@ -112,6 +112,7 @@ Outer component quotes keep their words. Components require at least three code 
 
 Separators are `/` and a spaced dash (` - `). Normalization converts typographic dashes before segmentation.
 An unspaced hyphen does not split a title. Unknown suffix labels can qualify through complete-component equality.
+
 Empty components and unbalanced brackets invalidate the split. Separators inside parentheses do not split the canonical title.
 Internal substrings alone cannot qualify.
 
@@ -127,6 +128,7 @@ Letters without this decomposition stay intact.
 
 Complete credits undergo spelling conversion separately for each artist. The matcher sorts the converted list again.
 Names that collide after conversion remain separate entries. No accent conversion changes ownership or whitelist identities.
+
 Artist groups use the complete structured lists as keys. Joined display text cannot merge different credit structures.
 Latin credit equality also compares the converted lists, including name boundaries and entry counts.
 
@@ -219,9 +221,18 @@ Full-credit text and code points exist once per distinct credit. Exact keys move
 Ordinary records omit sparse review data. The source track vector must outlive its index.
 
 Local tag readers use a bounded queue and joined workers. Scanning overlaps chart retrieval.
+
 Album workers share pacing and cancellation. A restriction stops queued album requests.
 Other failures permit two further attempts per song. Missing or ambiguous album metadata follows the same limit.
 Successful chart albums need no extra request. Exhausted jobs do not stop unrelated lookups.
+
+The coordinator joins album workers before access recovery. It permits one security recovery and one sign-in recovery per album phase.
+Only unfinished jobs resume, with one worker and a minimum interval of 2,000 ms. Metadata attempt counts survive recovery.
+Shared restriction cancellation has a distinct exception type. Interrupted jobs retain their metadata attempt allowance.
+
+Album jobs use snapshot ranks and URLs. Invalid ranks and duplicate jobs fail before any worker starts.
+An existing snapshot album requires no request, even when the result row contains older metadata.
+Pending queues reuse storage across recovery. Saved warnings retain worker-initialization failures and shared access failures.
 
 Resource Acquisition Is Initialization (RAII) wrappers and smart pointers own handles, files, sockets, processes, and buffers.
 Nonthrowing accessors, arithmetic, callbacks, and moves use `noexcept`. Allocation, parsing, I/O, and cancellable scoring can throw.
@@ -230,6 +241,11 @@ Nonthrowing accessors, arithmetic, callbacks, and moves use `noexcept`. Allocati
 
 A dedicated persistent Edge profile serves invisible retrieval and visible access recovery.
 The access window closes before retrieval continues. Extensions remain disabled.
+Page identity checks accept equivalent Unicode and percent-encoded URLs. Encoded path separators remain distinct from actual separators.
+These checks do not change stored song URLs or whitelist keys.
+
+Album enrichment reads the primary release link in the song header, including compilations and other release categories.
+One unique primary release takes priority over other page references. Several distinct primary releases remain ambiguous.
 
 The local Chrome DevTools Protocol (CDP) transport uses asynchronous WinHTTP with a blocking worker interface.
 Connections share a process-wide session. Callback contexts keep buffers until handle closure.

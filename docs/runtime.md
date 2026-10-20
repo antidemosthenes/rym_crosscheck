@@ -58,13 +58,21 @@ Visible Edge windows serve access recovery. Normal retrieval stays invisible.
 Each affected chart page permits one security recovery and one sign-in recovery.
 A retry keeps ranks from earlier pages.
 
+Album lookup permits one security recovery and one sign-in recovery for the entire album phase.
+All album workers stop before the coordinator opens an access window. Completed albums remain available.
+
+Successful recovery resumes only unfinished jobs, with one worker and at least 2,000 ms between request starts.
+Larger configured request delays remain active. This slowdown does not guarantee access.
+
 | State | Program behavior |
 | --- | --- |
-| Recognized security page | Open ordinary Edge at the affected chart URL. |
+| Recognized security page | Open ordinary Edge at the affected chart or song URL. |
 | Sign-in redirect | Open the affected URL for manual sign-in. |
 | Unusable page after 10 seconds | Offer browser access recovery. Redirects or changed markup can also cause this state. |
-| Navigation error, exhausted retry, timeout, or cancellation | Stop. Keep the previous report. |
-| Restricted album lookup | Stop queued album requests. Keep available albums and give a warning. |
+| Chart navigation error, exhausted chart recovery, or chart timeout | Stop. Keep the previous report. |
+| Cancellation | Stop. Keep the previous report. |
+| Restricted album lookup | Pause queued requests. Offer bounded access recovery. Keep completed albums. |
+| Exhausted album recovery or album timeout | Keep completed comparison data. Save unavailable-album warnings. |
 
 The [README access instructions](../README.md#during-a-comparison) apply.
 RYM's form requires reCAPTCHA and **Submit**. After sign-in, the homepage is sufficient.
@@ -81,7 +89,9 @@ Logs show the requested URL and the last observed URL when page loading times ou
 Recovery opens the affected URL in a new Edge window with the saved profile.
 It does not intentionally open the homepage or initialize cookies.
 RYM can redirect to the homepage. A homepage does not supply the requested chart data.
-Close that window to retry hidden retrieval. Repeated failure stops the comparison and preserves the previous report.
+
+Close that window to retry hidden retrieval. Repeated chart failure preserves the previous report.
+Repeated album failure saves a metadata warning with the comparison results.
 
 A redirected CLI cannot perform interactive verification by itself.
 The GUI uses a checked launcher channel for its hidden CLI.
@@ -118,17 +128,24 @@ Workers share navigation pacing. The default interval is 1,000 ms between starts
 Additional workers overlap page loads without removing the delay.
 
 These are application limits, not known server quotas. Browser asset requests are separate.
-A restriction stops queued album requests without another attempt or access window.
+
+A restriction pauses queued album requests. Interactive runs use the access recovery procedure above.
+Repeated restrictions or failed recovery stop unfinished lookups. Noninteractive runs retain warnings without opening Edge.
+
 Other album failures use up to three attempts per song. Every attempt follows the shared request delay.
 Empty, invalid, or ambiguous metadata also triggers another attempt. A successful lookup requires one unique supported album.
 An exhausted lookup does not stop unrelated album jobs.
+Security checks and requests stopped by the shared restriction signal do not consume metadata attempts.
 
 The report retains album failures as separate metadata warnings. Empty album fields show `Unavailable`.
+If one security check stops several jobs, their warnings identify the shared cause and affected URL.
 A real album named `Unknown` remains valid. Album failures do not affect matching or the comparison exit code.
+The Album column uses RYM's associated release, including compilations, singles, and EPs.
+
 Titles and complete artists remain required. Invalid chart identities stop publication and preserve the previous report.
 
 A successful comparison atomically replaces the report.
-Incomplete chart ranks or failed access keep the previous report.
+Incomplete chart ranks or failed chart access keep the previous report.
 Unresolved local files produce an affected-file list and exit code `2`.
 
 Controlled exits join workers, release handles, and remove temporary writes. They close owned browser processes.
